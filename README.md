@@ -20,7 +20,7 @@ npm run dev                         # http://localhost:5103
 npm run build && npm run preview    # http://localhost:5103
 ```
 
-On a laptop the app shows inside a phone frame, with **Demo controls** beside it. "Full width" mode removes the frame. On a real phone the app fills the screen and the demo controls are below it.
+On a laptop the app shows inside a phone frame, with **Demo controls** beside it. "Full width" mode removes the frame. In a phone browser the demo controls are below the app. **In the installed APK there are no demo controls** — it looks like the real app.
 
 ## Demo cheat-sheet
 
@@ -31,7 +31,8 @@ On a laptop the app shows inside a phone frame, with **Demo controls** beside it
 | Nitin (Owner) | 98765 43210 |
 | Sneha (adult member) | 98765 00011 |
 | Rohan (invited) | 98500 98500 — sees Accept / Decline |
-| New user | Any new number — creates their own family and goes through onboarding |
+| New user | Welcome → **Create new account** → any new number (pick the country code first) → onboarding |
+| Google | Welcome → Continue with Google → pick a family account, or **Use another account** to sign up |
 
 | Show this | How |
 |---|---|
@@ -48,14 +49,14 @@ On a laptop the app shows inside a phone frame, with **Demo controls** beside it
 | Premium calendar | More → Insurance → Premium calendar |
 | Snap a document | **+** → Snap a document → simulated AI reading → review → saves the policy and the document |
 | Reminders | Demo controls → Run reminders now → bell icon. Reminders are deduplicated per item and preset, and stop when the item is paid or cancelled |
-| Onboarding | Demo controls → Start as a new user (7 steps: profile, family name, plan + UPI trial, set-up, homes, members, first asset). The UPI ID `fail@upi` simulates a declined mandate |
+| Onboarding | Demo controls → Start as a new user. 6 steps, each with Back: about you (address, country, currency), family name, plan (full plan cards) + UPI ID, set-up, members, first asset (opens the asset form or Snap, then the new asset's 360° page) |
 
 ## Modules
 
 | Area | What works |
 |---|---|
-| Sign-in | Mobile OTP (validation, wrong-OTP error, resend), Google account picker, invite accept / decline, new-account creation |
-| Onboarding | 7 steps with progress bar, plan choice, trial start, add homes and members |
+| Sign-in | Separate **Create new account** / **Sign in** paths; country-code dropdown (20 countries, per-country number length); mobile OTP (validation, wrong-OTP error, resend); "no account for this number" screen; Google account picker with sign-up; invite accept / decline |
+| Onboarding | 6 steps with progress bar and Back on every step; address saved as Home; currency (20) defaults from the country; plan cards with every inclusion; trial start; members list under the form |
 | Home | Space switch, search, notifications badge, 5 tiles (assets, value, due in 7 days, overdue, open tasks), upcoming list, recent activity |
 | Assets | Category chips, sort, filter sheet (owner / property / status / coverage), list or grid view, archived list |
 | Asset 360° | Everything listed in the cheat-sheet above; every action opens a bottom sheet and returns to the same page |

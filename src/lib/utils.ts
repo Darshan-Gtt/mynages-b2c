@@ -70,16 +70,38 @@ export function timeAgo(iso: string): string {
   return fmtDate(iso);
 }
 
+/** Display currency for money amounts; follows the family's currency setting. */
+let MONEY = 'INR';
+export function setMoneyCurrency(code?: string) { MONEY = code || 'INR'; }
+export const moneySymbol = () => new Intl.NumberFormat('en', { style: 'currency', currency: MONEY, currencyDisplay: 'narrowSymbol' }).formatToParts(0).find((p) => p.type === 'currency')?.value ?? MONEY;
+
+/** Subscription prices are set in rupees (PRD §10.2), whatever the family's display currency. */
+export const planPrice = (n: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(n);
+
 export function inr(n?: number, opts: { compact?: boolean } = {}): string {
   if (n === undefined || n === null || Number.isNaN(n)) return '—';
+  const indian = MONEY === 'INR';
   if (opts.compact) {
     const a = Math.abs(n);
-    if (a >= 1e7) return `₹${(n / 1e7).toFixed(2).replace(/\.?0+$/, '')} Cr`;
-    if (a >= 1e5) return `₹${(n / 1e5).toFixed(2).replace(/\.?0+$/, '')} L`;
-    if (a >= 1e3) return `₹${(n / 1e3).toFixed(1).replace(/\.0$/, '')}K`;
+    const sym = moneySymbol();
+    const t = (x: number, d: number) => x.toFixed(d).replace(/\.?0+$/, '');
+    if (indian) {
+      if (a >= 1e7) return `${sym}${t(n / 1e7, 2)} Cr`;
+      if (a >= 1e5) return `${sym}${t(n / 1e5, 2)} L`;
+    } else {
+      if (a >= 1e9) return `${sym}${t(n / 1e9, 2)}B`;
+      if (a >= 1e6) return `${sym}${t(n / 1e6, 2)}M`;
+    }
+    if (a >= 1e3) return `${sym}${(n / 1e3).toFixed(1).replace(/\.0$/, '')}K`;
   }
-  return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(n);
+  return new Intl.NumberFormat(indian ? 'en-IN' : 'en', { style: 'currency', currency: MONEY, currencyDisplay: 'narrowSymbol', maximumFractionDigits: 0 }).format(n);
 }
+
+/** True inside the installed Android/iOS app (Capacitor), where demo-only controls are hidden. */
+export const isNativeApp = () => !!(globalThis as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor?.isNativePlatform?.();
+
+/** “+91 98765 43210” for a member's mobile. */
+export const phoneOf = (m: { mobile?: string; dial?: string }) => (m.mobile ? `+${m.dial ?? '91'} ${m.mobile}` : '');
 
 export function num(n: number): string {
   return new Intl.NumberFormat('en-IN').format(n);

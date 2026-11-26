@@ -6,7 +6,7 @@ import { useMe } from '../lib/session';
 import { isOwner, visible } from '../lib/access';
 import { acceptInvite, cancelInvite, removeRow, removeMember, setRole, upsert } from '../lib/actions';
 import { age, covLabel } from '../lib/compute';
-import { daysUntil, fmtDate, inr, timeAgo, uid } from '../lib/utils';
+import { daysUntil, fmtDate, inr, phoneOf, timeAgo, uid } from '../lib/utils';
 import { TopBar, CovBadge, AssetCard } from '../components/common';
 import { Avatar, Badge, Empty, KV, Pills } from '../components/ui/Misc';
 import { ActionSheet, Confirm, type SheetAction } from '../components/ui/Modal';
@@ -153,7 +153,7 @@ export function MemberPage() {
   return (
     <div className="page">
       <TopBar title={m.name} back="/more/family" sub={`${m.relation === 'Self' ? 'Owner' : m.relation}${m.dob ? ` · ${age(m.dob)} yrs` : ''}`} actions={(isOwner(me) || m.id === me.id) && <button className="icon-btn" aria-label="Edit" onClick={() => open({ kind: 'member', member: m })}><Edit3 size={18} /></button>} />
-      <div className="pad"><div className="card-row"><Avatar name={m.name} color={m.color} size={52} /><div className="grow"><KV rows={[['Mobile', m.mobile ? `+91 ${m.mobile}` : 'No phone (profile)'], ['Status', m.state], ['Born', m.dob && fmtDate(m.dob)]]} /></div></div></div>
+      <div className="pad"><div className="card-row"><Avatar name={m.name} color={m.color} size={52} /><div className="grow"><KV rows={[['Mobile', m.mobile ? phoneOf(m) : 'No phone (profile)'], ['Status', m.state], ['Born', m.dob && fmtDate(m.dob)]]} /></div></div></div>
       <section className="msection"><div className="msection-head"><h3><FileText size={15} style={{ display: 'inline', verticalAlign: -2 }} /> Documents · {docs.length}</h3><button className="btn btn-xs" onClick={() => open({ kind: 'document', ownerType: 'member', ownerId: m.id })}><Plus size={12} /> Add</button></div>
         <div className="list">{docs.length ? docs.map((d) => <div key={d.id} className="mrow"><span className="row-text"><b>{d.title}</b><em>{d.category}{d.number ? ` · ${d.number}` : ''}{d.expiryDate ? ` · exp ${fmtDate(d.expiryDate)}` : ''}</em></span>{d.expiryDate && daysUntil(d.expiryDate) <= 30 && <Badge tone="warning"><Clock size={11} /> Soon</Badge>}</div>) : <p className="small muted pad-x">Aadhaar, PAN, certificates, report cards…</p>}</div>
       </section>

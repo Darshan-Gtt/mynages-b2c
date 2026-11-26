@@ -11,15 +11,15 @@ import { useMe, useSpace } from '../../lib/session';
 import { canCreateIn, entitlement, visible, type Gate } from '../../lib/access';
 import {
   ActionError, changePlan, changeStatus, completeObligation, inviteMember, mapContact, renewCoverage, saveCoverage, saveDoc, saveExpense, saveMember, saveObligation,
-  saveService, saveTask, saveValuation, upsert,
+  saveAsset, saveService, saveTask, saveValuation, upsert,
 } from '../../lib/actions';
-import { addDays, addMonths, inr, sleep, today, uid } from '../../lib/utils';
+import { addDays, addMonths, inr, planPrice, sleep, today, uid } from '../../lib/utils';
 import { CONTACT_TYPES, OBLIGATION_TYPES, PLANS, POLICY_TYPES, RELATIONS, planOf, COLORS } from '../../data/masters';
 import type { Asset, Contact, Coverage, Doc, Expense, Member, Obligation, Space, Task } from '../../lib/types';
 
 export type Ed =
   | { kind: 'add' }
-  | { kind: 'asset'; asset?: Asset }
+  | { kind: 'asset'; asset?: Asset; categoryId?: string; onSaved?: (id: string) => void }
   | { kind: 'coverage'; assetId?: string; memberId?: string; coverage?: Coverage; insurance?: boolean }
   | { kind: 'renew'; coverage: Coverage }
   | { kind: 'obligation'; assetId?: string; memberId?: string; obligation?: Obligation }
@@ -35,7 +35,7 @@ export type Ed =
   | { kind: 'status'; assetId: string }
   | { kind: 'member'; member?: Member }
   | { kind: 'invite'; memberId: string }
-  | { kind: 'snap' }
+  | { kind: 'snap'; onSaved?: (assetId: string) => void }
   | { kind: 'upgrade'; gate: Gate };
 
 interface Api { open: (e: Ed) => void; gate: (kind: Parameters<typeof entitlement>[1]) => boolean }
@@ -98,7 +98,7 @@ function Active({ ed, close, open, gate }: { ed: Ed; close: () => void; open: (e
         </Sheet>
       );
     }
-    case 'asset': return <AssetSheet asset={ed.asset} onClose={close} />;
+    case 'asset': return <AssetSheet asset={ed.asset} categoryId={ed.categoryId} onSaved={ed.onSaved} onClose={close} />;
 
     case 'coverage': {
       const c = ed.coverage;
@@ -383,7 +383,7 @@ function Active({ ed, close, open, gate }: { ed: Ed; close: () => void; open: (e
       );
     }
 
-    case 'snap': return <SnapSheet onClose={close} />;
+    case 'snap': return <SnapSheet onClose={close} onSaved={ed.onSaved} />;
 
     case 'upgrade': {
       const g = ed.gate;
@@ -396,7 +396,7 @@ function Active({ ed, close, open, gate }: { ed: Ed; close: () => void; open: (e
             <div className="row between small"><span className="muted">Current plan</span><b>{cur.name}</b></div>
             {g.suggest && (
               <div className="plan-pick on">
-                <div className="row between"><b>{g.suggest.name}</b><span><b>{inr(g.suggest.yearly)}</b><span className="xs muted">/yr</span></span></div>
+                <div className="row between"><b>{g.suggest.name}</b><span><b>{planPrice(g.suggest.yearly)}</b><span className="xs muted">/yr</span></span></div>
                 <span className="xs muted">{g.suggest.members ? `Owner + ${g.suggest.members} members` : 'Owner only'} · {g.suggest.assets === Infinity ? 'Unlimited' : g.suggest.assets} assets · {g.suggest.storageGb} GB</span>
               </div>
             )}
@@ -414,54 +414,72 @@ function Active({ ed, close, open, gate }: { ed: Ed; close: () => void; open: (e
 }
 
 /** AI capture preview (AI-01, P1): read a policy / invoice, show extracted values for review, save only on confirm (AC-22). */
-function SnapSheet({ onClose }: { onClose: () => void }) {
+function SnapSheet({ onClose, onSaved }: { onClose: () => void; onSaved?: (assetId: string) => void }) {
   const db = useDb();
   const me = useMe()!;
   const toast = useToast();
+  const navigate = useNavigate();
   const [stage, setStage] = useState<'pick' | 'reading' | 'review'>('pick');
   const [sample, setSample] = useState<'policy' | 'invoice'>('policy');
   const [vals, setVals] = useState<Record<string, string>>({});
+  const vehicles = db.assets.filter((a) => a.categoryId === 'c_veh' && !a.archived && visible(a, me));
   const read = async (s: 'policy' | 'invoice') => {
     setSample(s); setStage('reading'); await sleep(1600);
     setVals(s === 'policy'
-      ? { provider: 'Tata AIG', number: '0160124437 00', policyType: 'motor', asset: 'a_activa', startDate: today(), endDate: addDays(addMonths(today(), 12), -1), premium: '2380', sumInsured: '56000' }
-      : { title: 'Philips Air Fryer HD9252', brand: 'Philips', model: 'HD9252/90', price: '8999', date: addDays(today(), -2), seller: 'Amazon.in', invoice: 'IN-BOM4-2026-118822', warrantyMonths: '24' });
+      ? { provider: 'Tata AIG', number: '0160124437 00', policyType: 'motor', asset: vehicles.find((a) => a.subcategoryId === 's_2w')?.id ?? '__new', vehicle: 'Honda Activa 6G', registration: 'MH12 RT 8890', startDate: today(), endDate: addDays(addMonths(today(), 12), -1), premium: '2380', sumInsured: '56000' }
+      : { title: 'LG 8 kg front-load washing machine', brand: 'LG', model: 'FHV1408ZWB', price: '38990', date: addDays(today(), -2), seller: 'Croma, Baner', invoice: 'CRM-PN-2026-118822', warrantyMonths: '24' });
     setStage('review');
   };
   const set = (k: string, v: string) => setVals({ ...vals, [k]: v });
+  const stamp = () => ({ createdBy: me.id, createdAt: new Date().toISOString() });
   const confirm = () => {
-    if (sample === 'policy') {
-      const a = db.assets.find((x) => x.id === vals.asset);
-      if (!a) { toast({ type: 'error', title: 'Choose which asset this policy covers' }); return; }
-      saveCoverage({ id: uid('cov'), kind: 'insurance', policyType: 'motor', linkedType: 'asset', assetId: a.id, insured: [], provider: vals.provider, number: vals.number, startDate: vals.startDate, endDate: vals.endDate, premium: Number(vals.premium), sumInsured: Number(vals.sumInsured), premiumFrequency: 'yearly', space: a.space, privateOwnerId: a.privateOwnerId, createdBy: me.id, createdAt: new Date().toISOString() }, true);
-      saveDoc({ id: uid('doc'), title: `Motor policy — ${vals.provider}`, category: 'Coverage', ownerType: 'asset', ownerId: a.id, number: vals.number, issuer: vals.provider, expiryDate: vals.endDate, tags: ['scanned'], fileName: 'policy_scan.pdf', size: 310_000, pages: 3, space: a.space, privateOwnerId: a.privateOwnerId, createdBy: me.id, createdAt: new Date().toISOString() });
-      toast({ type: 'success', title: 'Policy saved', message: `${a.name}: insurance, document and renewal reminder` });
-    } else {
-      toast({ type: 'info', title: 'Continue in Add asset', message: 'Pick Home appliances → choose a type; we’ve noted the invoice details' });
-    }
-    onClose();
+    try {
+      let assetId: string;
+      if (sample === 'policy') {
+        let a = db.assets.find((x) => x.id === vals.asset);
+        if (!a && vals.asset !== '__new') { toast({ type: 'error', title: 'Choose which vehicle this policy covers' }); return; }
+        if (!a) {
+          const [make, ...model] = vals.vehicle.trim().split(/\s+/);
+          a = saveAsset({ id: '', code: '', name: vals.vehicle.trim() || 'Two-wheeler', categoryId: 'c_veh', subcategoryId: 's_2w', ownerMemberId: me.id, propertyId: db.properties[0]?.id, statusId: 'st_active', fields: { make: make || 'Honda', model: model.join(' ') || 'Activa', registration_number: vals.registration }, tags: ['scanned'], archived: false, color: '#3B6FB6', space: 'family', ...stamp() }, true);
+        }
+        saveCoverage({ id: uid('cov'), kind: 'insurance', policyType: 'motor', linkedType: 'asset', assetId: a.id, insured: [], provider: vals.provider, number: vals.number, startDate: vals.startDate, endDate: vals.endDate, premium: Number(vals.premium), sumInsured: Number(vals.sumInsured), premiumFrequency: 'yearly', space: a.space, privateOwnerId: a.privateOwnerId, ...stamp() }, true);
+        saveDoc({ id: uid('doc'), title: `Motor policy — ${vals.provider}`, category: 'Coverage', ownerType: 'asset', ownerId: a.id, number: vals.number, issuer: vals.provider, expiryDate: vals.endDate, tags: ['scanned'], fileName: 'policy_scan.pdf', size: 310_000, pages: 3, space: a.space, privateOwnerId: a.privateOwnerId, ...stamp() });
+        toast({ type: 'success', title: 'Policy saved', message: `${a.name}: insurance, document and renewal reminder` });
+        assetId = a.id;
+      } else {
+        const a = saveAsset({ id: '', code: '', name: vals.title.trim() || 'Washing machine', categoryId: 'c_app', subcategoryId: 's_wm', ownerMemberId: me.id, propertyId: db.properties[0]?.id, statusId: 'st_active', purchaseDate: vals.date, purchaseCost: Number(vals.price) || undefined, invoiceNo: vals.invoice, fields: { brand: vals.brand, model: vals.model }, tags: ['scanned'], archived: false, color: '#0E9384', space: 'family', ...stamp() }, true);
+        const months = Number(vals.warrantyMonths) || 12;
+        saveCoverage({ id: uid('cov'), kind: 'warranty', linkedType: 'asset', assetId: a.id, insured: [], provider: vals.brand, number: vals.invoice, startDate: vals.date, endDate: addDays(addMonths(vals.date, months), -1), space: a.space, privateOwnerId: a.privateOwnerId, ...stamp() }, true);
+        saveDoc({ id: uid('doc'), title: `Invoice — ${vals.seller}`, category: 'Purchase', ownerType: 'asset', ownerId: a.id, number: vals.invoice, issuer: vals.seller, tags: ['scanned'], fileName: 'invoice_scan.pdf', size: 180_000, pages: 1, space: a.space, privateOwnerId: a.privateOwnerId, ...stamp() });
+        toast({ type: 'success', title: 'Asset added from invoice', message: `${a.name}: ${months}-month warranty, invoice and reminder` });
+        assetId = a.id;
+      }
+      onClose();
+      navigate(`/assets/${assetId}`);
+      onSaved?.(assetId);
+    } catch (e) { toast({ type: 'error', title: e instanceof Error ? e.message : 'Could not save' }); }
   };
   return (
-    <Sheet open onClose={onClose} title="Snap a document" subtitle="Preview of AI capture (planned P1) — nothing is saved until you confirm" full>
+    <Sheet open onClose={onClose} title="Snap a document" subtitle="We read the document and fill the details — nothing is saved until you confirm" full>
       {stage === 'pick' && (
         <div className="stack">
           <div className="snap-cam"><Camera size={36} /><span className="small">Point the camera at a policy, invoice, warranty card or RC</span></div>
-          <p className="xs muted">Demo: pick a sample to “scan”.</p>
+          <p className="xs muted">Or choose a recent photo:</p>
           <button className="mrow" onClick={() => read('policy')}><span className="icon-tile sm"><FileText size={16} /></span><span className="row-text"><b>Two-wheeler insurance policy</b><em>Tata AIG · 3 pages</em></span></button>
-          <button className="mrow" onClick={() => read('invoice')}><span className="icon-tile sm"><FileText size={16} /></span><span className="row-text"><b>Amazon invoice</b><em>Air fryer · 1 page</em></span></button>
+          <button className="mrow" onClick={() => read('invoice')}><span className="icon-tile sm"><FileText size={16} /></span><span className="row-text"><b>Purchase invoice</b><em>Washing machine · 1 page</em></span></button>
         </div>
       )}
       {stage === 'reading' && <div className="empty"><Loader2 size={28} className="spinner" /><h4>Reading the document…</h4><p className="small">Finding insurer, policy number, dates and amounts</p></div>}
       {stage === 'review' && (
         <div className="stack">
           <div className="alert alert-info small"><Sparkles size={15} /> Check what we found. Edit anything that’s wrong, then confirm.</div>
-          {Object.entries(vals).map(([k, v]) => (
+          {Object.entries(vals).filter(([k]) => !(['vehicle', 'registration'].includes(k) && vals.asset !== '__new')).map(([k, v]) => (
             <div className="field" key={k}>
               <span className="field-label">{k.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase())}</span>
               {k === 'asset' ? (
                 <select className="select" value={v} onChange={(e) => set(k, e.target.value)}>
-                  <option value="">Choose asset</option>
-                  {db.assets.filter((a) => a.categoryId === 'c_veh' && visible(a, me)).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                  {vehicles.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                  <option value="__new">Add as a new vehicle</option>
                 </select>
               ) : <input className="input" value={v} onChange={(e) => set(k, e.target.value)} />}
             </div>

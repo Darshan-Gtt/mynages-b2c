@@ -43,7 +43,8 @@ function Routed() {
   const db = useDb();
   const me = useMe();
   if (!me) return <AuthPage />;
-  if (!db.settings.onboarded && me.role === 'owner') return <OnboardingPage />;
+  // Onboarding sits inside the editor provider so its "add first asset" / "snap" sheets work and survive the switch to the app.
+  if (!db.settings.onboarded && me.role === 'owner') return <EditorProvider><OnboardingPage /></EditorProvider>;
   return (
     <EditorProvider>
       <ScrollTop />

@@ -14,6 +14,8 @@ export interface Member {
   dob?: string;
   gender?: 'male' | 'female' | 'other';
   mobile?: string;
+  /** Country dial code without '+'; India (91) when absent. */
+  dial?: string;
   email?: string;
   state: MemberState;
   role?: FamilyRole;
@@ -222,6 +224,8 @@ export interface Settings {
   ownerId: ID;
   language: string;
   currency: string;
+  country?: string;
+  address?: string;
   timeZone: string;
   dateFormat: string;
   theme: 'light' | 'dark' | 'auto';

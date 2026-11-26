@@ -4,7 +4,7 @@ import { ClipboardList, FlaskConical, Home, LayoutGrid, Menu as MenuIcon, Plus, 
 import { useDb, resetNewUser, resetSample } from '../lib/store';
 import { signIn, useMe } from '../lib/session';
 import { acceptInvite, setSubStatus, forcePlan, syncReminders } from '../lib/actions';
-import { cx } from '../lib/utils';
+import { cx, isNativeApp } from '../lib/utils';
 import { useEd } from './editors/Editors';
 import { useToast } from './ui/Toast';
 import { Avatar } from './ui/Misc';
@@ -33,11 +33,12 @@ export function TabsLayout() {
 
 /** On desktop the app sits in a phone frame with demo controls beside it; on phones it is full-screen. */
 export function DeviceFrame({ children }: { children: React.ReactNode }) {
+  const native = isNativeApp();
   const [mode, setMode] = useState<'phone' | 'full'>(() => (localStorage.getItem('mynages.b2c.frame') as 'phone' | 'full') || 'phone');
   useEffect(() => { try { localStorage.setItem('mynages.b2c.frame', mode); } catch { /* ignore */ } }, [mode]);
   return (
-    <div className={cx('stage', mode === 'full' && 'stage-full')}>
-      <DemoPanel mode={mode} setMode={setMode} />
+    <div className={cx('stage', (mode === 'full' || native) && 'stage-full')}>
+      {!native && <DemoPanel mode={mode} setMode={setMode} />}
       <div className="device">
         <div className="device-notch" aria-hidden="true" />
         <div id="app-frame" className="app-frame">{children}</div>

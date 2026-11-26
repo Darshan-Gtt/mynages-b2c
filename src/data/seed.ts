@@ -23,10 +23,13 @@ const baseSettings = (familyName: string, ownerId: string): Db['settings'] => ({
 });
 
 /** A new owner straight after sign-up — goes through first-run onboarding. */
-export function createNewUserDb(name = 'Ananya Deshpande', mobile = '9123456780'): Db {
-  const me: Member = { id: 'm_me', name, relation: 'Self', mobile, state: 'self', role: 'owner', color: COLORS[0], createdAt: new Date().toISOString(), joinedAt: new Date().toISOString() };
+export function createNewUserDb(name = 'Ananya Deshpande', mobile: string | undefined = '9123456780', opts: { dial?: string; email?: string; country?: string; currency?: string; tz?: string } = {}): Db {
+  const me: Member = { id: 'm_me', name, relation: 'Self', mobile, dial: opts.dial, email: opts.email, state: 'self', role: 'owner', color: COLORS[0], createdAt: new Date().toISOString(), joinedAt: new Date().toISOString() };
   const s = baseSettings(`${name.split(' ')[0]}'s Family`, me.id);
   s.onboarded = false;
+  if (opts.country) s.country = opts.country;
+  if (opts.currency) s.currency = opts.currency;
+  if (opts.tz) s.timeZone = opts.tz;
   return {
     version: DB_VERSION, settings: s,
     subscription: { planId: 'family', cycle: 'yearly', status: 'trialing', trialEndsAt: d(14), periodEnd: d(14), method: 'Not set', invoices: [] },

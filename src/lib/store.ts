@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { createNewUserDb, createSampleDb, DB_VERSION } from '../data/seed';
 import type { Db } from './types';
+import { setMoneyCurrency } from './utils';
 
 const KEY = 'mynages.b2c.db';
 const listeners = new Set<() => void>();
@@ -17,12 +18,12 @@ function load(): Db {
   return createSampleDb();
 }
 function persist() { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch { /* quota */ } }
-const emit = () => listeners.forEach((l) => l());
+const emit = () => { setMoneyCurrency(db.settings.currency); listeners.forEach((l) => l()); };
 
 export const getDb = () => db;
 export function setDb(fn: (d: Db) => Db) { db = fn(db); persist(); emit(); }
 export function resetSample() { db = createSampleDb(); persist(); emit(); }
-export function resetNewUser(name?: string, mobile?: string) { db = createNewUserDb(name, mobile); persist(); emit(); }
+export function resetNewUser(...args: Parameters<typeof createNewUserDb>) { db = createNewUserDb(...args); persist(); emit(); }
 const sub = (l: () => void) => { listeners.add(l); return () => listeners.delete(l); };
 if (typeof window !== 'undefined') window.addEventListener('storage', (e) => { if (e.key === KEY) { db = load(); emit(); } });
 export const useDb = (): Db => useSyncExternalStore(sub, () => db);
@@ -31,3 +32,4 @@ export function nextCode(d: Db, series: string): { code: string; counters: Db['c
   return { code: `${series}-${String(n).padStart(4, '0')}`, counters: { ...d.counters, [series]: n } };
 }
 persist();
+setMoneyCurrency(db.settings.currency);

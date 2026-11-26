@@ -21,14 +21,14 @@ function spec(f: FieldDef): FieldSpec<V> {
 }
 
 /** Add asset: category tile → subcategory → dynamic form (PRD §7.2, AC-18). */
-export function AssetSheet({ asset, onClose }: { asset?: Asset; onClose: () => void }) {
+export function AssetSheet({ asset, categoryId, onSaved, onClose }: { asset?: Asset; categoryId?: string; onSaved?: (id: string) => void; onClose: () => void }) {
   const db = useDb();
   const me = useMe()!;
   const activeSpace = useSpace();
   const toast = useToast();
   const navigate = useNavigate();
   const isNew = !asset;
-  const [cat, setCat] = useState(asset?.categoryId);
+  const [cat, setCat] = useState(asset?.categoryId ?? categoryId);
   const [subId, setSubId] = useState(asset?.subcategoryId);
   const [allowDup, setAllowDup] = useState(false);
   const sub = db.subcategories.find((s) => s.id === subId);
@@ -76,7 +76,7 @@ export function AssetSheet({ asset, onClose }: { asset?: Asset; onClose: () => v
     const saved = saveAsset(draft, isNew);
     toast({ type: 'success', title: isNew ? 'Asset added' : 'Saved', message: isNew ? saved.name : undefined });
     onClose();
-    if (isNew) navigate(`/assets/${saved.id}`);
+    if (isNew) { navigate(`/assets/${saved.id}`); onSaved?.(saved.id); }
   };
 
   return (

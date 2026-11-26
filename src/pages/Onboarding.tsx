@@ -1,39 +1,63 @@
 import { useEffect, useState } from 'react';
-import { ArrowRight, Check, Home, Loader2, Plus, Trash2, UserPlus } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Camera, Check, Loader2, UserPlus } from 'lucide-react';
 import { setDb, useDb } from '../lib/store';
-import { useMe } from '../lib/session';
-import { changePlan, inviteMember, saveMember, upsert } from '../lib/actions';
-import { addDays, cx, inr, sleep, uid } from '../lib/utils';
+import { signOut, useMe } from '../lib/session';
+import { changePlan, inviteMember, saveMember } from '../lib/actions';
+import { addDays, cx, planPrice, sleep, uid } from '../lib/utils';
 import { PLANS, RELATIONS, COLORS } from '../data/masters';
+import { COUNTRIES, CURRENCIES, countryOf, validMobile } from '../data/countries';
 import { Field, Input, Select } from '../components/ui/Form';
+import { PhoneInput } from '../components/ui/PhoneInput';
 import { Segmented } from '../components/ui/Misc';
 import { useToast } from '../components/ui/Toast';
 import { useEd } from '../components/editors/Editors';
 import { CatIcon } from '../components/Icons';
-import type { Property } from '../lib/types';
 
-const STEPS = ['Profile', 'Family', 'Plan', 'Set-up', 'Homes', 'Members', 'First asset'];
+const STEPS = ['About you', 'Family', 'Plan', 'Set-up', 'Members', 'First asset'];
 
-/** First-run onboarding (PRD §5.3): profile → create family → plan → base package → properties → family → first asset. */
+/** What each plan includes, shown in full on the plan step (PRD §10.2). */
+const PLAN_COPY: Record<(typeof PLANS)[number]['id'], { tagline: string; base?: string; features: string[] }> = {
+  individual: {
+    tagline: 'For one person managing their own things',
+    features: ['Just you — no family members', 'Up to 100 assets', '5 GB document storage', '10 AI document scans a month', 'Insurance, warranties & AMC', 'Maintenance schedules & service log', 'QR labels and reports', 'Reminders on push and WhatsApp'],
+  },
+  family: {
+    tagline: 'For families who manage things together',
+    base: 'Everything in Individual, plus:',
+    features: ['You + 4 family members (they never pay)', 'Up to 300 assets', '20 GB document storage', '30 AI document scans a month', 'Health records & vaccinations', 'Share links that expire in 7 days', 'A private space for every member'],
+  },
+  family_plus: {
+    tagline: 'For larger families and their full financial picture',
+    base: 'Everything in Family, plus:',
+    features: ['You + 8 family members', 'Unlimited assets', '50 GB document storage', '100 AI document scans a month', 'Savings & investments tracking', 'Share links with any expiry', 'Reminders by email too'],
+  },
+};
+
+/** First-run onboarding (PRD §5.3): about you → create family → plan → base package → family members → first asset. */
 export function OnboardingPage() {
   const db = useDb();
   const me = useMe()!;
   const toast = useToast();
   const { open } = useEd();
   const [step, setStep] = useState(0);
-  const [profile, setProfile] = useState({ name: me.name, dob: '', language: 'English', currency: 'INR' });
+  const [profile, setProfile] = useState({
+    name: me.name, dob: me.dob ?? '', language: db.settings.language, currency: db.settings.currency,
+    country: db.settings.country ?? 'IN', address: db.settings.address ?? '', city: db.properties.find((x) => x.id === 'p_home')?.city ?? '',
+  });
   const [family, setFamily] = useState(db.settings.familyName);
   const [plan, setPlan] = useState<'individual' | 'family' | 'family_plus'>('family');
   const [cycle, setCycle] = useState<'monthly' | 'yearly'>('yearly');
   const [upi, setUpi] = useState('');
   const [copying, setCopying] = useState(0);
-  const [prop, setProp] = useState({ name: 'Home', type: 'flat' as Property['type'], city: 'Pune' });
-  const [member, setMember] = useState({ name: '', relation: 'Spouse', mobile: '' });
+  const [member, setMember] = useState({ name: '', relation: 'Spouse', mobile: '', iso: db.settings.country ?? 'IN' });
   const [err, setErr] = useState<string>();
+  const people = db.members.filter((m) => m.id !== me.id);
+  const homeCountry = countryOf(profile.country);
 
   useEffect(() => {
     if (step !== 3) return;
     let live = true;
+    setCopying(0);
     (async () => { for (let i = 1; i <= 5; i++) { await sleep(420); if (!live) return; setCopying(i); } })();
     return () => { live = false; };
   }, [step]);
@@ -42,108 +66,181 @@ export function OnboardingPage() {
     setDb((d) => ({ ...d, settings: { ...d.settings, onboarded: true } }));
     toast({ type: 'success', title: `Welcome to Mynages, ${me.name.split(' ')[0]}!` });
   };
-  const next = () => { setErr(undefined); setStep(step + 1); };
+  const go = (n: number) => { setErr(undefined); setStep(n); document.querySelector('.onb')?.scrollTo({ top: 0 }); };
+  const back = () => { if (step === 0) signOut(); else go(step - 1); };
   const p = PLANS.find((x) => x.id === plan)!;
+
+  const saveProfile = () => {
+    if (profile.name.trim().length < 2) { setErr('Enter your name'); return false; }
+    setMember((m) => ({ ...m, iso: profile.country }));
+    setDb((d) => {
+      const home = profile.address.trim() || profile.city.trim()
+        ? [{ id: 'p_home', name: 'Home', type: 'flat' as const, city: profile.city.trim(), address: profile.address.trim() || undefined }, ...d.properties.filter((x) => x.id !== 'p_home')]
+        : d.properties.filter((x) => x.id !== 'p_home');
+      return {
+        ...d,
+        members: d.members.map((m) => (m.id === me.id ? { ...m, name: profile.name.trim(), dob: profile.dob || undefined } : m)),
+        properties: home,
+        settings: { ...d.settings, language: profile.language, currency: profile.currency, country: profile.country, address: profile.address.trim() || undefined, timeZone: homeCountry.tz },
+      };
+    });
+    return true;
+  };
+
+  const addPerson = () => {
+    const mc = countryOf(member.iso);
+    if (member.mobile && !validMobile(mc, member.mobile)) { setErr(`Enter a valid ${mc.name} mobile number, or leave it empty`); return; }
+    const id = uid('m');
+    saveMember({ id, name: member.name.trim(), relation: member.relation, mobile: member.mobile || undefined, dial: member.mobile ? mc.dial : undefined, state: 'profile', color: COLORS[db.members.length % COLORS.length], createdAt: new Date().toISOString() });
+    if (member.mobile) {
+      try {
+        inviteMember(id, 'whatsapp', ['Son', 'Daughter', 'Father', 'Mother', 'Grandparent'].includes(member.relation) ? 'view_only' : 'adult');
+        toast({ type: 'success', title: `Invite sent to ${member.name.split(' ')[0]} on WhatsApp` });
+      } catch (e) { toast({ type: 'error', title: e instanceof Error ? e.message : 'Could not invite' }); }
+    } else toast({ type: 'success', title: 'Profile added' });
+    setMember({ name: '', relation: 'Son', mobile: '', iso: member.iso }); setErr(undefined);
+  };
+
+  const onContinue = () => {
+    if (step === 0 && !saveProfile()) return;
+    if (step === 1) { if (family.trim().length < 2) { setErr('Name your family'); return; } setDb((d) => ({ ...d, settings: { ...d.settings, familyName: family.trim() } })); }
+    if (step === 2) {
+      if (!/^[\w.-]{2,}@[a-zA-Z]{2,}$/.test(upi.trim())) { setErr('Enter a valid UPI ID, e.g. name@okicici'); return; }
+      changePlan(plan, cycle);
+      setDb((d) => ({ ...d, subscription: { ...d.subscription, status: 'trialing', trialEndsAt: addDays(new Date().toISOString().slice(0, 10), 14), method: `UPI · ${upi.trim()}` } }));
+      toast({ type: 'success', title: `${p.name} trial started`, message: '14 days free' });
+    }
+    go(step + 1);
+  };
 
   return (
     <div className="onb">
       <div className="onb-top">
+        <div className="row" style={{ gap: 8 }}>
+          <button className="icon-btn sm" aria-label={step === 0 ? 'Back to sign in' : 'Back'} onClick={back}><ArrowLeft size={18} /></button>
+          <span className="xs muted grow">Step {step + 1} of {STEPS.length} · {STEPS[step]}</span>
+        </div>
         <div className="onb-bar"><span style={{ width: `${((step + 1) / STEPS.length) * 100}%` }} /></div>
-        <span className="xs muted">Step {step + 1} of {STEPS.length} · {STEPS[step]}</span>
       </div>
       <div className="onb-body">
         {step === 0 && (
           <div className="stack">
             <h2>About you</h2>
-            <Field label="Full name" required error={err}><Input value={profile.name} onChange={(e) => setProfile({ ...profile, name: e.target.value })} /></Field>
+            <Field label="Full name" required error={err}><Input value={profile.name} onChange={(e) => { setProfile({ ...profile, name: e.target.value }); setErr(undefined); }} /></Field>
             <Field label="Date of birth" optional><Input type="date" value={profile.dob} onChange={(e) => setProfile({ ...profile, dob: e.target.value })} /></Field>
-            <div className="grid-2"><Field label="Language"><Select value={profile.language} onChange={(e) => setProfile({ ...profile, language: e.target.value })}><option>English</option><option>Marathi</option><option>Hindi</option></Select></Field><Field label="Currency"><Select value={profile.currency} onChange={(e) => setProfile({ ...profile, currency: e.target.value })}><option value="INR">INR ₹</option></Select></Field></div>
-            <p className="xs muted">Country India · Time zone Asia/Kolkata</p>
+            <Field label="Address" optional hint="Saved as your Home, so you can say where things are kept"><Input value={profile.address} placeholder="Flat / house no., building, street, area" onChange={(e) => setProfile({ ...profile, address: e.target.value })} /></Field>
+            <div className="grid-2">
+              <Field label="City" optional><Input value={profile.city} placeholder="e.g. Pune" onChange={(e) => setProfile({ ...profile, city: e.target.value })} /></Field>
+              <Field label="Country">
+                <Select value={profile.country} onChange={(e) => { const c = countryOf(e.target.value); setProfile({ ...profile, country: c.iso, currency: c.currency }); }}>
+                  {COUNTRIES.map((c) => <option key={c.iso} value={c.iso}>{c.name}</option>)}
+                </Select>
+              </Field>
+            </div>
+            <div className="grid-2">
+              <Field label="Language"><Select value={profile.language} onChange={(e) => setProfile({ ...profile, language: e.target.value })}>{['English', 'मराठी (Marathi)', 'हिन्दी (Hindi)'].map((l) => <option key={l}>{l}</option>)}</Select></Field>
+              <Field label="Currency">
+                <Select value={profile.currency} onChange={(e) => setProfile({ ...profile, currency: e.target.value })}>
+                  {CURRENCIES.map((c) => <option key={c.code} value={c.code}>{c.code} · {c.name}</option>)}
+                </Select>
+              </Field>
+            </div>
+            <p className="xs muted">Values of your assets are shown in {profile.currency}. Time zone {homeCountry.tz.replace('_', ' ')}.</p>
           </div>
         )}
         {step === 1 && (
           <div className="stack">
             <h2>Create your family workspace</h2>
             <p className="small muted">Everything you add here is shared with family members you invite. You’ll also have a private space only you can see.</p>
-            <Field label="Family name" error={err}><Input value={family} onChange={(e) => setFamily(e.target.value)} /></Field>
-            <p className="xs muted">No pending invite was found for your number. If someone invited you, ask them to resend it.</p>
+            <Field label="Family name" error={err}><Input value={family} onChange={(e) => { setFamily(e.target.value); setErr(undefined); }} /></Field>
+            <p className="xs muted">No pending invite was found for your account. If someone invited you, ask them to resend it.</p>
           </div>
         )}
         {step === 2 && (
           <div className="stack">
-            <h2>Choose a plan</h2>
-            <p className="small muted">Start with a 14-day free trial. Family members you invite never pay.</p>
+            <h2>Choose your plan</h2>
+            <p className="small muted">Every plan starts with a 14-day free trial. Family members you invite never pay.</p>
             <Segmented label="Billing" value={cycle} onChange={setCycle} options={[{ value: 'monthly', label: 'Monthly' }, { value: 'yearly', label: 'Yearly · 2 months free' }]} />
-            {PLANS.map((x) => (
-              <button key={x.id} className={cx('plan-pick', plan === x.id && 'on')} onClick={() => setPlan(x.id)}>
-                <div className="row between"><b>{x.name}</b><span><b>{inr(cycle === 'monthly' ? x.monthly : x.yearly)}</b><span className="xs muted">/{cycle === 'monthly' ? 'mo' : 'yr'}</span></span></div>
-                <span className="xs muted">{x.members ? `You + ${x.members} members` : 'Just you'} · {x.assets === Infinity ? 'Unlimited' : x.assets} assets · {x.storageGb} GB{x.id === 'family_plus' ? ' · Savings & investments' : ''}</span>
-              </button>
-            ))}
-            <Field label="UPI autopay ID" hint="₹0 today; first charge after the trial. Cancel any time." error={err}><Input value={upi} placeholder="name@okhdfcbank" onChange={(e) => setUpi(e.target.value)} /></Field>
+            <div className="plan-cards">
+              {PLANS.map((x) => {
+                const copy = PLAN_COPY[x.id];
+                const on = plan === x.id;
+                return (
+                  <div key={x.id} className={cx('plan-card', on && 'on')} onClick={() => setPlan(x.id)}>
+                    {x.id === 'family' && <span className="plan-tag">Most popular</span>}
+                    <h3>{x.name}</h3>
+                    <p className="small muted">{copy.tagline}</p>
+                    <div className="plan-price">
+                      <b>{planPrice(cycle === 'monthly' ? x.monthly : Math.round(x.yearly / 12))}</b>
+                      <span className="small muted">/ month{cycle === 'yearly' ? `, billed ${planPrice(x.yearly)} yearly` : ''}<br />+ GST · 14 days free</span>
+                    </div>
+                    <button type="button" className={cx('btn btn-block', on ? 'btn-primary' : '')} onClick={(e) => { e.stopPropagation(); setPlan(x.id); }}>
+                      {on ? <><Check size={15} /> Selected</> : `Choose ${x.name}`}
+                    </button>
+                    {copy.base && <p className="xs muted plan-base">{copy.base}</p>}
+                    <ul className="plan-feats">
+                      {copy.features.map((f) => <li key={f}><Check size={15} /> {f}</li>)}
+                    </ul>
+                  </div>
+                );
+              })}
+            </div>
+            <Field label="UPI ID" hint="Nothing to pay today. The first charge is after the trial ends; cancel any time." error={err}>
+              <Input value={upi} placeholder="name@okhdfcbank" onChange={(e) => { setUpi(e.target.value); setErr(undefined); }} />
+            </Field>
           </div>
         )}
         {step === 3 && (
           <div className="stack">
             <h2>Setting up {family}</h2>
-            <p className="small muted">We’re adding ready-made categories for Indian families so you never start from scratch.</p>
+            <p className="small muted">We’re adding ready-made categories so you never start from scratch.</p>
             {['9 categories with icons', '28 asset types with the right fields', 'Document categories for people and assets', 'Reminder presets (30, 15, 7, 1 day…)', 'Your private space'].map((t, i) => (
               <div key={t} className={cx('copy-row', i < copying && 'done')}>{i < copying ? <Check size={16} /> : i === copying ? <Loader2 size={16} className="spinner" /> : <span className="dot" />}<span>{t}</span></div>
             ))}
-            <div className="tile3" style={{ opacity: copying >= 1 ? 1 : 0.3, transition: 'opacity .3s' }}>
-              {db.categories.slice(0, 9).map((c) => <div key={c.id} className="ctile"><span className="icon-tile"><CatIcon name={c.icon} /></span><span>{c.name}</span></div>)}
+            <p className="xs muted">These categories are added to your account automatically — nothing to choose here. You can add your own later in Settings.</p>
+            <div className={cx('tile3 preset-tiles', copying >= 1 && 'ready')} aria-label="Categories added for you">
+              {db.categories.slice(0, 9).map((c) => (
+                <div key={c.id} className="ctile preset"><span className="icon-tile"><CatIcon name={c.icon} /></span><span>{c.name}</span>{copying >= 1 && <span className="preset-check"><Check size={11} /></span>}</div>
+              ))}
             </div>
           </div>
         )}
         {step === 4 && (
           <div className="stack">
-            <h2>Where do you live?</h2>
-            <p className="small muted">Homes are used as locations — “the AC in the Pune flat”. Add more later.</p>
-            {db.properties.map((x) => <div key={x.id} className="mrow"><span className="icon-tile sm"><Home size={16} /></span><span className="row-text"><b>{x.name}</b><em>{x.type} · {x.city}</em></span><button className="icon-btn sm" aria-label="Remove" onClick={() => setDb((d) => ({ ...d, properties: d.properties.filter((y) => y.id !== x.id) }))}><Trash2 size={15} /></button></div>)}
-            <div className="grid-2"><Field label="Name"><Input value={prop.name} onChange={(e) => setProp({ ...prop, name: e.target.value })} /></Field><Field label="City"><Input value={prop.city} onChange={(e) => setProp({ ...prop, city: e.target.value })} /></Field></div>
-            <Field label="Type"><Select value={prop.type} onChange={(e) => setProp({ ...prop, type: e.target.value as Property['type'] })}>{['flat', 'house', 'farmhouse', 'land', 'office', 'other'].map((t) => <option key={t}>{t}</option>)}</Select></Field>
-            <button className="btn" disabled={!prop.name.trim()} onClick={() => { upsert('properties', { id: uid('p'), ...prop }); setProp({ name: '', type: 'house', city: prop.city }); toast({ type: 'success', title: 'Home added' }); }}><Plus size={15} /> Add home</button>
+            <h2>Add your family</h2>
+            <p className="small muted">Add people with a mobile to invite them on WhatsApp, or without one to keep their documents and policies (children, elderly parents).</p>
+            <Field label="Name"><Input value={member.name} placeholder="e.g. Rohit Deshpande" onChange={(e) => setMember({ ...member, name: e.target.value })} /></Field>
+            <Field label="Relation"><Select value={member.relation} onChange={(e) => setMember({ ...member, relation: e.target.value })}>{RELATIONS.filter((r) => r !== 'Self').map((r) => <option key={r}>{r}</option>)}</Select></Field>
+            <Field label="Mobile" optional hint="Add a mobile to invite them on WhatsApp" error={err}>
+              <PhoneInput iso={member.iso} onIso={(x) => { setMember({ ...member, iso: x, mobile: '' }); setErr(undefined); }} value={member.mobile} onChange={(v) => { setMember({ ...member, mobile: v }); setErr(undefined); }} invalid={!!err} />
+            </Field>
+            <button className="btn" disabled={!member.name.trim()} onClick={addPerson}><UserPlus size={15} /> {member.mobile ? 'Add & invite' : 'Add profile'}</button>
+            {people.length > 0 && (
+              <div className="stack-sm">
+                <span className="section-label">Added ({people.length})</span>
+                {people.map((m) => <div key={m.id} className="mrow"><span className="avatar" style={{ background: m.color, color: '#fff', width: 30, height: 30 }}>{m.name[0]}</span><span className="row-text"><b>{m.name}</b><em>{m.relation} · {m.state === 'invited' ? 'Invite sent' : 'Profile'}</em></span></div>)}
+              </div>
+            )}
           </div>
         )}
         {step === 5 && (
           <div className="stack">
-            <h2>Add your family</h2>
-            <p className="small muted">Add people with a mobile to invite them on WhatsApp, or without one to keep their documents and policies (children, elderly parents).</p>
-            {db.members.filter((m) => m.id !== me.id).map((m) => <div key={m.id} className="mrow"><span className="avatar" style={{ background: m.color, color: '#fff', width: 30, height: 30 }}>{m.name[0]}</span><span className="row-text"><b>{m.name}</b><em>{m.relation} · {m.state === 'invited' ? 'Invite sent' : 'Profile'}</em></span></div>)}
-            <Field label="Name"><Input value={member.name} onChange={(e) => setMember({ ...member, name: e.target.value })} /></Field>
-            <div className="grid-2"><Field label="Relation"><Select value={member.relation} onChange={(e) => setMember({ ...member, relation: e.target.value })}>{RELATIONS.filter((r) => r !== 'Self').map((r) => <option key={r}>{r}</option>)}</Select></Field><Field label="Mobile" optional error={err}><Input inputMode="numeric" maxLength={10} value={member.mobile} onChange={(e) => setMember({ ...member, mobile: e.target.value.replace(/\D/g, '') })} /></Field></div>
-            <button className="btn" disabled={!member.name.trim()} onClick={() => {
-              if (member.mobile && !/^[6-9]\d{9}$/.test(member.mobile)) { setErr('10-digit mobile'); return; }
-              const id = uid('m');
-              saveMember({ id, name: member.name.trim(), relation: member.relation, mobile: member.mobile || undefined, state: 'profile', color: COLORS[db.members.length % COLORS.length], createdAt: new Date().toISOString() });
-              if (member.mobile) { try { inviteMember(id, 'whatsapp', ['Son', 'Daughter', 'Father', 'Mother', 'Grandparent'].includes(member.relation) ? 'view_only' : 'adult'); toast({ type: 'success', title: `Invite sent to ${member.name.split(' ')[0]} on WhatsApp` }); } catch (e) { toast({ type: 'error', title: e instanceof Error ? e.message : 'Could not invite' }); } }
-              else toast({ type: 'success', title: 'Profile added' });
-              setMember({ name: '', relation: 'Son', mobile: '' }); setErr(undefined);
-            }}><UserPlus size={15} /> {member.mobile ? 'Add & invite' : 'Add profile'}</button>
-          </div>
-        )}
-        {step === 6 && (
-          <div className="stack">
             <h2>Add your first asset</h2>
-            <p className="small muted">Pick a tile — it takes under a minute. Or photograph a policy or invoice.</p>
+            <p className="small muted">Pick a category — it takes under a minute. Or photograph a policy or invoice and we’ll fill the details.</p>
             <div className="tile3">
-              {db.categories.map((c) => <button key={c.id} className="ctile" onClick={() => { finish(); setTimeout(() => open({ kind: 'asset' }), 50); }}><span className="icon-tile"><CatIcon name={c.icon} /></span><span>{c.name}</span></button>)}
+              {db.categories.map((c) => <button key={c.id} className="ctile" onClick={() => open({ kind: 'asset', categoryId: c.id, onSaved: finish })}><span className="icon-tile"><CatIcon name={c.icon} /></span><span>{c.name}</span></button>)}
             </div>
-            <button className="btn btn-block" onClick={() => { finish(); setTimeout(() => open({ kind: 'snap' }), 50); }}>Snap a document instead</button>
+            <button className="btn btn-block" onClick={() => open({ kind: 'snap', onSaved: finish })}><Camera size={16} /> Snap a document instead</button>
           </div>
         )}
       </div>
       <div className="onb-foot">
-        {step > 0 && step !== 3 && <button className="btn" onClick={() => setStep(step - 1)}>Back</button>}
-        <span className="grow" />
-        {[4, 5].includes(step) && <button className="btn btn-ghost" onClick={next}>Skip</button>}
-        {step === 6 ? <button className="btn btn-ghost" onClick={finish}>Skip to Home</button> : (
-          <button className="btn btn-primary" disabled={step === 3 && copying < 5} onClick={() => {
-            if (step === 0) { if (profile.name.trim().length < 2) { setErr('Enter your name'); return; } setDb((d) => ({ ...d, members: d.members.map((m) => (m.id === me.id ? { ...m, name: profile.name.trim(), dob: profile.dob || undefined } : m)), settings: { ...d.settings, language: profile.language } })); }
-            if (step === 1) { if (family.trim().length < 2) { setErr('Name your family'); return; } setDb((d) => ({ ...d, settings: { ...d.settings, familyName: family.trim() } })); }
-            if (step === 2) { if (!/^[\w.-]{2,}@[a-zA-Z]{2,}$/.test(upi)) { setErr('Enter a valid UPI ID, e.g. name@okicici'); return; } changePlan(plan, cycle); setDb((d) => ({ ...d, subscription: { ...d.subscription, status: 'trialing', trialEndsAt: addDays(new Date().toISOString().slice(0, 10), 14), method: `UPI autopay · ${upi}` } })); toast({ type: 'success', title: `${p.name} trial started`, message: '14 days free' }); }
-            next();
-          }}>{step === 2 ? 'Start free trial' : 'Continue'} <ArrowRight size={15} /></button>
+        <button className="btn" onClick={back}>Back</button>
+        {step === 4 && <button className="btn btn-ghost" onClick={() => go(step + 1)}>Skip</button>}
+        {step === 5 ? <button className="btn btn-ghost" onClick={finish}>Skip to Home</button> : (
+          <button className="btn btn-primary" disabled={step === 3 && copying < 5} onClick={onContinue}>
+            {step === 2 ? 'Start free trial' : 'Continue'} <ArrowRight size={15} />
+          </button>
         )}
       </div>
     </div>
