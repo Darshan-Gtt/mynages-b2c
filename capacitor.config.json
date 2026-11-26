@@ -1,0 +1,9 @@
+{
+  "appId": "com.mynages.family.demo",
+  "appName": "Mynages",
+  "webDir": "dist",
+  "android": {
+    "adjustMarginsForEdgeToEdge": "force",
+    "backgroundColor": "#0F2D3D"
+  }
+}
