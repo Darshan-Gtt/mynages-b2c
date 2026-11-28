@@ -1,15 +1,18 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, ArrowRight, Camera, Check, Loader2, UserPlus } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Camera, Check, Loader2, PartyPopper, UserPlus } from 'lucide-react';
 import { setDb, useDb } from '../lib/store';
 import { signOut, useMe } from '../lib/session';
 import { changePlan, inviteMember, saveMember } from '../lib/actions';
-import { addDays, cx, planPrice, sleep, uid } from '../lib/utils';
+import { addDays, cx, fmtDate, planPrice, sleep, uid } from '../lib/utils';
+import { checkValue } from '../lib/rules';
 import { PLANS, RELATIONS, COLORS } from '../data/masters';
+import { PhoneBookButton } from '../components/ui/ContactPick';
 import { COUNTRIES, CURRENCIES, countryOf, validMobile } from '../data/countries';
 import { Field, Input, Select } from '../components/ui/Form';
 import { PhoneInput } from '../components/ui/PhoneInput';
 import { Segmented } from '../components/ui/Misc';
 import { useToast } from '../components/ui/Toast';
+import { Modal } from '../components/ui/Modal';
 import { useEd } from '../components/editors/Editors';
 import { CatIcon } from '../components/Icons';
 
@@ -47,10 +50,18 @@ export function OnboardingPage() {
   const [family, setFamily] = useState(db.settings.familyName);
   const [plan, setPlan] = useState<'individual' | 'family' | 'family_plus'>('family');
   const [cycle, setCycle] = useState<'monthly' | 'yearly'>('yearly');
-  const [upi, setUpi] = useState('');
+  const [trialNote, setTrialNote] = useState(false);
   const [copying, setCopying] = useState(0);
-  const [member, setMember] = useState({ name: '', relation: 'Spouse', mobile: '', iso: db.settings.country ?? 'IN' });
+  const [member, setMember] = useState({ name: '', relation: 'Spouse', relOther: '', mobile: '', iso: db.settings.country ?? 'IN' });
   const [err, setErr] = useState<string>();
+  const [fe, setFe] = useState<Record<string, string | undefined>>({});
+  /** Validate the hand-written fields with the same rules as every other form. */
+  const vet = (checks: [string, string, string, boolean?][]) => {
+    const out: Record<string, string | undefined> = {};
+    for (const [key, label, val, req] of checks) out[key] = req && !val.trim() ? `${label} is required` : checkValue(key, label, 'text', val.trim());
+    setFe(out);
+    return !Object.values(out).some(Boolean);
+  };
   const people = db.members.filter((m) => m.id !== me.id);
   const homeCountry = countryOf(profile.country);
 
@@ -66,12 +77,13 @@ export function OnboardingPage() {
     setDb((d) => ({ ...d, settings: { ...d.settings, onboarded: true } }));
     toast({ type: 'success', title: `Welcome to Mynages, ${me.name.split(' ')[0]}!` });
   };
-  const go = (n: number) => { setErr(undefined); setStep(n); document.querySelector('.onb')?.scrollTo({ top: 0 }); };
+  const go = (n: number) => { setErr(undefined); setFe({}); setStep(n); document.querySelector('.onb')?.scrollTo({ top: 0 }); };
   const back = () => { if (step === 0) signOut(); else go(step - 1); };
   const p = PLANS.find((x) => x.id === plan)!;
 
   const saveProfile = () => {
-    if (profile.name.trim().length < 2) { setErr('Enter your name'); return false; }
+    if (!vet([['name', 'Full name', profile.name, true], ['address', 'Address', profile.address], ['city', 'City', profile.city]])) return false;
+    if (profile.dob && checkValue('dob', 'Date of birth', 'date', profile.dob)) { setFe({ dob: checkValue('dob', 'Date of birth', 'date', profile.dob) }); return false; }
     setMember((m) => ({ ...m, iso: profile.country }));
     setDb((d) => {
       const home = profile.address.trim() || profile.city.trim()
@@ -88,27 +100,30 @@ export function OnboardingPage() {
   };
 
   const addPerson = () => {
+    if (!vet([['name', 'Full name', member.name, true]])) return;
+    if (member.relation === 'Other' && member.relOther.trim().length < 2) { setFe({ rel: 'Type the relation, e.g. Uncle' }); return; }
+    const relation = member.relation === 'Other' ? member.relOther.trim() : member.relation;
     const mc = countryOf(member.iso);
     if (member.mobile && !validMobile(mc, member.mobile)) { setErr(`Enter a valid ${mc.name} mobile number, or leave it empty`); return; }
     const id = uid('m');
-    saveMember({ id, name: member.name.trim(), relation: member.relation, mobile: member.mobile || undefined, dial: member.mobile ? mc.dial : undefined, state: 'profile', color: COLORS[db.members.length % COLORS.length], createdAt: new Date().toISOString() });
+    saveMember({ id, name: member.name.trim(), relation, mobile: member.mobile || undefined, dial: member.mobile ? mc.dial : undefined, state: 'profile', color: COLORS[db.members.length % COLORS.length], createdAt: new Date().toISOString() });
     if (member.mobile) {
       try {
         inviteMember(id, 'whatsapp', ['Son', 'Daughter', 'Father', 'Mother', 'Grandparent'].includes(member.relation) ? 'view_only' : 'adult');
         toast({ type: 'success', title: `Invite sent to ${member.name.split(' ')[0]} on WhatsApp` });
       } catch (e) { toast({ type: 'error', title: e instanceof Error ? e.message : 'Could not invite' }); }
     } else toast({ type: 'success', title: 'Profile added' });
-    setMember({ name: '', relation: 'Son', mobile: '', iso: member.iso }); setErr(undefined);
+    setMember({ name: '', relation: 'Son', relOther: '', mobile: '', iso: member.iso }); setErr(undefined);
   };
 
   const onContinue = () => {
     if (step === 0 && !saveProfile()) return;
-    if (step === 1) { if (family.trim().length < 2) { setErr('Name your family'); return; } setDb((d) => ({ ...d, settings: { ...d.settings, familyName: family.trim() } })); }
+    if (step === 1) { if (!vet([['familyName', 'Family name', family, true]])) return; setDb((d) => ({ ...d, settings: { ...d.settings, familyName: family.trim() } })); }
     if (step === 2) {
-      if (!/^[\w.-]{2,}@[a-zA-Z]{2,}$/.test(upi.trim())) { setErr('Enter a valid UPI ID, e.g. name@okicici'); return; }
       changePlan(plan, cycle);
-      setDb((d) => ({ ...d, subscription: { ...d.subscription, status: 'trialing', trialEndsAt: addDays(new Date().toISOString().slice(0, 10), 14), method: `UPI · ${upi.trim()}` } }));
-      toast({ type: 'success', title: `${p.name} trial started`, message: '14 days free' });
+      setDb((d) => ({ ...d, subscription: { ...d.subscription, status: 'trialing', trialEndsAt: addDays(new Date().toISOString().slice(0, 10), p.trialDays), method: 'Not set' } }));
+      setTrialNote(true);
+      return;
     }
     go(step + 1);
   };
@@ -126,21 +141,21 @@ export function OnboardingPage() {
         {step === 0 && (
           <div className="stack">
             <h2>About you</h2>
-            <Field label="Full name" required error={err}><Input value={profile.name} onChange={(e) => { setProfile({ ...profile, name: e.target.value }); setErr(undefined); }} /></Field>
-            <Field label="Date of birth" optional><Input type="date" value={profile.dob} onChange={(e) => setProfile({ ...profile, dob: e.target.value })} /></Field>
-            <Field label="Address" optional hint="Saved as your Home, so you can say where things are kept"><Input value={profile.address} placeholder="Flat / house no., building, street, area" onChange={(e) => setProfile({ ...profile, address: e.target.value })} /></Field>
+            <Field label="Full name" required error={fe.name}><Input value={profile.name} maxLength={60} autoCapitalize="words" invalid={!!fe.name} onChange={(e) => { setProfile({ ...profile, name: e.target.value }); setFe({}); }} /></Field>
+            <Field label="Date of birth" optional error={fe.dob}><Input type="date" min="1900-01-01" max={new Date().toISOString().slice(0, 10)} invalid={!!fe.dob} value={profile.dob} onChange={(e) => setProfile({ ...profile, dob: e.target.value })} /></Field>
+            <Field label="Address" optional error={fe.address} hint="Saved as your Home, so you can say where things are kept"><Input maxLength={200} invalid={!!fe.address} value={profile.address} placeholder="Flat / house no., building, street, area" onChange={(e) => setProfile({ ...profile, address: e.target.value })} /></Field>
             <div className="grid-2">
-              <Field label="City" optional><Input value={profile.city} placeholder="e.g. Pune" onChange={(e) => setProfile({ ...profile, city: e.target.value })} /></Field>
+              <Field label="City" optional error={fe.city}><Input maxLength={50} autoCapitalize="words" invalid={!!fe.city} value={profile.city} placeholder="e.g. Pune" onChange={(e) => setProfile({ ...profile, city: e.target.value })} /></Field>
               <Field label="Country">
-                <Select value={profile.country} onChange={(e) => { const c = countryOf(e.target.value); setProfile({ ...profile, country: c.iso, currency: c.currency }); }}>
+                <Select aria-label="Country" value={profile.country} onChange={(e) => { const c = countryOf(e.target.value); setProfile({ ...profile, country: c.iso, currency: c.currency }); }}>
                   {COUNTRIES.map((c) => <option key={c.iso} value={c.iso}>{c.name}</option>)}
                 </Select>
               </Field>
             </div>
             <div className="grid-2">
-              <Field label="Language"><Select value={profile.language} onChange={(e) => setProfile({ ...profile, language: e.target.value })}>{['English', 'मराठी (Marathi)', 'हिन्दी (Hindi)'].map((l) => <option key={l}>{l}</option>)}</Select></Field>
+              <Field label="Language"><Select aria-label="Language" value={profile.language} onChange={(e) => setProfile({ ...profile, language: e.target.value })}>{['English', 'मराठी (Marathi)', 'हिन्दी (Hindi)'].map((l) => <option key={l}>{l}</option>)}</Select></Field>
               <Field label="Currency">
-                <Select value={profile.currency} onChange={(e) => setProfile({ ...profile, currency: e.target.value })}>
+                <Select aria-label="Currency" value={profile.currency} onChange={(e) => setProfile({ ...profile, currency: e.target.value })}>
                   {CURRENCIES.map((c) => <option key={c.code} value={c.code}>{c.code} · {c.name}</option>)}
                 </Select>
               </Field>
@@ -152,14 +167,14 @@ export function OnboardingPage() {
           <div className="stack">
             <h2>Create your family workspace</h2>
             <p className="small muted">Everything you add here is shared with family members you invite. You’ll also have a private space only you can see.</p>
-            <Field label="Family name" error={err}><Input value={family} onChange={(e) => { setFamily(e.target.value); setErr(undefined); }} /></Field>
+            <Field label="Family name" error={fe.familyName}><Input maxLength={60} invalid={!!fe.familyName} value={family} onChange={(e) => { setFamily(e.target.value); setFe({}); }} /></Field>
             <p className="xs muted">No pending invite was found for your account. If someone invited you, ask them to resend it.</p>
           </div>
         )}
         {step === 2 && (
           <div className="stack">
             <h2>Choose your plan</h2>
-            <p className="small muted">Every plan starts with a 14-day free trial. Family members you invite never pay.</p>
+            <p className="small muted">Every plan starts with a free trial — no payment needed today. Family members you invite never pay.</p>
             <Segmented label="Billing" value={cycle} onChange={setCycle} options={[{ value: 'monthly', label: 'Monthly' }, { value: 'yearly', label: 'Yearly · 2 months free' }]} />
             <div className="plan-cards">
               {PLANS.map((x) => {
@@ -172,8 +187,9 @@ export function OnboardingPage() {
                     <p className="small muted">{copy.tagline}</p>
                     <div className="plan-price">
                       <b>{planPrice(cycle === 'monthly' ? x.monthly : Math.round(x.yearly / 12))}</b>
-                      <span className="small muted">/ month{cycle === 'yearly' ? `, billed ${planPrice(x.yearly)} yearly` : ''}<br />+ GST · 14 days free</span>
+                      <span className="small muted">/ month{cycle === 'yearly' ? `, billed ${planPrice(x.yearly)} yearly` : ''}<br />+ GST</span>
                     </div>
+                    <span className="trial-pill">{x.trialDays}-day free trial</span>
                     <button type="button" className={cx('btn btn-block', on ? 'btn-primary' : '')} onClick={(e) => { e.stopPropagation(); setPlan(x.id); }}>
                       {on ? <><Check size={15} /> Selected</> : `Choose ${x.name}`}
                     </button>
@@ -185,9 +201,6 @@ export function OnboardingPage() {
                 );
               })}
             </div>
-            <Field label="UPI ID" hint="Nothing to pay today. The first charge is after the trial ends; cancel any time." error={err}>
-              <Input value={upi} placeholder="name@okhdfcbank" onChange={(e) => { setUpi(e.target.value); setErr(undefined); }} />
-            </Field>
           </div>
         )}
         {step === 3 && (
@@ -209,8 +222,10 @@ export function OnboardingPage() {
           <div className="stack">
             <h2>Add your family</h2>
             <p className="small muted">Add people with a mobile to invite them on WhatsApp, or without one to keep their documents and policies (children, elderly parents).</p>
-            <Field label="Name"><Input value={member.name} placeholder="e.g. Rohit Deshpande" onChange={(e) => setMember({ ...member, name: e.target.value })} /></Field>
-            <Field label="Relation"><Select value={member.relation} onChange={(e) => setMember({ ...member, relation: e.target.value })}>{RELATIONS.filter((r) => r !== 'Self').map((r) => <option key={r}>{r}</option>)}</Select></Field>
+            <Field label="Name" error={fe.name}><Input maxLength={60} autoCapitalize="words" invalid={!!fe.name} value={member.name} placeholder="e.g. Rohit Deshpande" onChange={(e) => { setMember({ ...member, name: e.target.value }); setFe({}); }} /></Field>
+            <div><PhoneBookButton label="Fill from phone book" onPick={(p) => { const d = p.phone.replace(/\D/g, ''); setMember({ ...member, name: member.name.trim() ? member.name : p.name, mobile: member.iso === 'IN' ? d.slice(-10) : d }); setFe({}); setErr(undefined); }} /></div>
+            <Field label="Relation"><Select aria-label="Relation" value={member.relation} onChange={(e) => setMember({ ...member, relation: e.target.value })}>{RELATIONS.filter((r) => r !== 'Self').map((r) => <option key={r}>{r}</option>)}</Select></Field>
+            {member.relation === 'Other' && <Field label="Relation (type it)" required error={fe.rel}><Input aria-label="Other relation" maxLength={40} autoCapitalize="words" invalid={!!fe.rel} value={member.relOther} placeholder="e.g. Uncle, Cousin" onChange={(e) => { setMember({ ...member, relOther: e.target.value }); setFe({}); }} /></Field>}
             <Field label="Mobile" optional hint="Add a mobile to invite them on WhatsApp" error={err}>
               <PhoneInput iso={member.iso} onIso={(x) => { setMember({ ...member, iso: x, mobile: '' }); setErr(undefined); }} value={member.mobile} onChange={(v) => { setMember({ ...member, mobile: v }); setErr(undefined); }} invalid={!!err} />
             </Field>
@@ -234,6 +249,15 @@ export function OnboardingPage() {
           </div>
         )}
       </div>
+      <Modal open={trialNote} onClose={() => { setTrialNote(false); go(3); }} title="">
+        <div className="trial-note">
+          <span className="trial-burst"><PartyPopper size={30} /></span>
+          <h3>Hooray! Your {p.trialDays}-day free trial has started</h3>
+          <p>Enjoy everything in the <b>{p.name}</b> plan free until <b>{fmtDate(addDays(new Date().toISOString().slice(0, 10), p.trialDays))}</b>.</p>
+          <p className="small muted">When the trial ends, you’ll be asked to set up your subscription ({planPrice(cycle === 'yearly' ? p.yearly : p.monthly)}/{cycle === 'yearly' ? 'year' : 'month'} + GST) to keep using it. We’ll remind you before then — nothing is charged today.</p>
+          <button className="btn btn-primary btn-block btn-lg" onClick={() => { setTrialNote(false); go(3); }}>Let’s set things up <ArrowRight size={16} /></button>
+        </div>
+      </Modal>
       <div className="onb-foot">
         <button className="btn" onClick={back}>Back</button>
         {step === 4 && <button className="btn btn-ghost" onClick={() => go(step + 1)}>Skip</button>}

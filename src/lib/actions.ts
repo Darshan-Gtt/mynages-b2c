@@ -4,10 +4,11 @@
  */
 import { getDb, nextCode, setDb } from './store';
 import { currentUserId } from './session';
-import { addDays, addMonths, fmtDate, today, uid } from './utils';
+import { addDays, addMonths, fmt12, fmtDate, today, uid } from './utils';
+import { reminderAt } from './compute';
 import { entitlement } from './access';
 import { PLANS, planOf } from '../data/masters';
-import type { Asset, Coverage, Db, Doc, Event, Expense, Member, Notification, Obligation, Recurrence, ServiceLog, Space, Subscription, Task } from './types';
+import type { Asset, Coverage, ReminderPreset, Db, Doc, Event, Expense, Member, Notification, Obligation, Recurrence, ServiceLog, Space, Subscription, Task } from './types';
 
 export class ActionError extends Error {}
 const now = () => new Date().toISOString();
@@ -29,6 +30,18 @@ const ownerOf = <T extends { space: Space; privateOwnerId?: string }>(x: T) => (
 
 export function nextOccurrence(date: string, r: Recurrence) {
   return r === 'monthly' ? addMonths(date, 1) : r === 'quarterly' ? addMonths(date, 3) : r === 'half_yearly' ? addMonths(date, 6) : r === 'yearly' ? addMonths(date, 12) : null;
+}
+/** Next occurrence of a repeating task / reminder, including user-picked custom dates. */
+function nextOf(x: { dueDate: string; dueTime?: string; recurrence: Recurrence; customDates?: string[] }): Partial<Obligation & Task> | null {
+  if (x.recurrence === 'custom') {
+    const cur = `${x.dueDate}T${x.dueTime ?? '00:00'}`;
+    const rest = (x.customDates ?? []).filter((d) => d > cur).sort();
+    if (!rest.length) return null;
+    const [d, t] = rest[0].split('T');
+    return { dueDate: d, dueTime: t, customDates: rest.slice(1), recurrence: rest.length > 1 ? 'custom' : 'none' };
+  }
+  const nd = nextOccurrence(x.dueDate, x.recurrence);
+  return nd ? { dueDate: nd } : null;
 }
 
 /** Generic upsert/delete for simple records (contacts, properties, schedules…). */
@@ -131,7 +144,16 @@ export function saveValuation(assetId: string, date: string, value: number, note
 }
 
 // ---------------- coverage ----------------
-export function saveCoverage(c: Coverage, makeReminder: boolean) {
+/** Finds (or creates) the preset "N days before, at HH:mm". */
+export function presetFor(d: Db, days: number, time: string): { db: Db; id: string } {
+  const mins = days * 1440;
+  const hit = d.presets.find((p) => p.minutesBefore === mins && (p.atTime ?? '09:00') === time);
+  if (hit) return { db: d, id: hit.id };
+  const p: ReminderPreset = { id: `rp_c${uid('')}`, label: `${days} day${days === 1 ? '' : 's'} before, ${fmt12(time)}`, minutesBefore: mins, atTime: time };
+  return { db: { ...d, presets: [...d.presets, p].sort((a, b) => a.minutesBefore - b.minutesBefore) }, id: p.id };
+}
+
+export function saveCoverage(c: Coverage, makeReminder: boolean | { days: number; time: string }) {
   if (c.endDate < c.startDate) throw new ActionError('End date must be after the start date');
   if (c.linkedType === 'member' && !c.insured.length) throw new ActionError('Choose at least one insured family member');
   setDb((d) => {
@@ -142,9 +164,12 @@ export function saveCoverage(c: Coverage, makeReminder: boolean) {
     const label = c.kind === 'insurance' ? `${c.policyType} insurance` : c.kind === 'amc' ? 'AMC' : 'warranty';
     const linked = next.obligations.find((o) => o.coverageId === c.id && o.status === 'open');
     if (linked) next = { ...next, obligations: next.obligations.map((o) => (o.id === linked.id ? { ...o, dueDate: c.endDate, amount: c.premium ?? o.amount } : o)) };
-    else if (isNew && makeReminder) {
+    else if (makeReminder) {
+      let rem = c.kind === 'insurance' ? ['rp_30d', 'rp_15d', 'rp_7d'] : ['rp_15d', 'rp_7d'];
+      let dueTime: string | undefined;
+      if (typeof makeReminder === 'object') { const r = presetFor(next, makeReminder.days, makeReminder.time); next = r.db; rem = [r.id]; dueTime = makeReminder.time; }
       const title = c.kind === 'warranty' || c.kind === 'extended_warranty' ? `Warranty expiry — ${a?.name}` : c.kind === 'amc' ? `Renew AMC — ${a?.name}` : `Renew ${c.policyType} insurance — ${a?.name ?? c.insured.map((i) => name(d, i.memberId)).join(', ')}`;
-      next = { ...next, obligations: [{ id: uid('ob'), title, type: c.kind === 'insurance' ? 'insurance_premium' : c.kind === 'amc' ? 'amc_renewal' : 'warranty_expiry', assetId: c.assetId, memberId: c.insured[0]?.memberId, coverageId: c.id, amount: c.kind === 'warranty' ? undefined : c.premium, dueDate: c.endDate, recurrence: c.kind === 'insurance' && c.premiumFrequency && c.premiumFrequency !== 'single' ? (c.premiumFrequency as Recurrence) : 'none', autoRenew: false, reminders: c.kind === 'insurance' ? ['rp_30d', 'rp_15d', 'rp_7d'] : ['rp_15d', 'rp_7d'], status: 'open', ...ownerOf(c), createdBy: me(), createdAt: now() } as Obligation, ...next.obligations] };
+      next = { ...next, obligations: [{ id: uid('ob'), title, type: c.kind === 'insurance' ? 'insurance_premium' : c.kind === 'amc' ? 'amc_renewal' : 'warranty_expiry', assetId: c.assetId, memberId: c.insured[0]?.memberId, coverageId: c.id, amount: c.kind === 'warranty' ? undefined : c.premium, dueDate: c.endDate, dueTime, recurrence: c.kind === 'insurance' && c.premiumFrequency && c.premiumFrequency !== 'single' ? (c.premiumFrequency as Recurrence) : 'none', autoRenew: false, reminders: rem, contactId: c.agentContactId ?? c.providerContactId, status: 'open', ...ownerOf(c), createdBy: me(), createdAt: now() } as Obligation, ...next.obligations] };
     }
     next = withEvent(next, { assetId: c.assetId, type: 'coverage', text: `${isNew ? 'Added' : 'Updated'} ${label} ${c.number} (till ${fmtDate(c.endDate)})`, ...ownerOf(c) });
     return next;
@@ -170,6 +195,18 @@ export function deleteCoverage(id: string) {
   });
 }
 
+// ---------------- profile ----------------
+/** Change a member's verified mobile (after OTP). Sign-in, invites and WhatsApp reminders all use the new number. */
+export function changeMobile(memberId: string, dial: string, mobile: string) {
+  setDb((d) => {
+    const clash = d.members.find((m) => m.id !== memberId && m.mobile === mobile && (m.dial ?? '91') === dial && m.state !== 'removed');
+    if (clash) throw new ActionError(`This number is already used by ${clash.name.split(' ')[0]} in your family`);
+    const m = d.members.find((x) => x.id === memberId)!;
+    const next: Db = { ...d, members: d.members.map((x) => (x.id === memberId ? { ...x, mobile, dial } : x)) };
+    return notify(next, 'all', `${m.name.split(' ')[0]} changed their mobile number to +${dial} ${mobile.slice(0, 2)}••••••${mobile.slice(-2)}`, '/more/family', 'system');
+  });
+}
+
 // ---------------- obligations ----------------
 export function saveObligation(o: Obligation) {
   if (!o.title.trim()) throw new ActionError('Title is required');
@@ -190,8 +227,8 @@ export function completeObligation(id: string, paidOn: string, amount?: number, 
     const o = d.obligations.find((x) => x.id === id)!;
     let next: Db = { ...d, obligations: d.obligations.map((x) => (x.id === id ? { ...x, status: 'completed', completedAt: `${paidOn}T10:00:00`, completedBy: me(), amount: amount ?? x.amount } : x)), notifications: d.notifications.filter((n) => !n.id.startsWith(`rem_${id}`)) };
     if (amount && o.assetId) next = { ...next, expenses: [{ id: uid('ex'), assetId: o.assetId, date: paidOn, type: o.type === 'insurance_premium' ? 'Insurance' : o.type === 'tax' ? 'Tax' : o.type === 'amc_renewal' ? 'AMC' : o.type === 'subscription_renewal' ? 'Subscription' : o.type === 'bill' ? 'Bills' : 'Other', amount, paidBy: me(), notes: o.title, createdBy: me() }, ...next.expenses] };
-    const nd = nextOccurrence(o.dueDate, o.recurrence);
-    if (nd) { created = { ...o, id: uid('ob'), dueDate: nd, status: 'open', completedAt: undefined, completedBy: undefined, snoozedUntil: undefined, createdAt: now() }; next = { ...next, obligations: [created, ...next.obligations] }; }
+    const nd = nextOf(o);
+    if (nd) { created = { ...o, ...nd, id: uid('ob'), status: 'open', completedAt: undefined, completedBy: undefined, snoozedUntil: undefined, createdAt: now() }; next = { ...next, obligations: [created, ...next.obligations] }; }
     return withEvent(next, { assetId: o.assetId, type: 'reminder', text: `${o.title} marked paid / renewed on ${fmtDate(paidOn)}`, reason: note, ...ownerOf(o) });
   });
   return created as Obligation | null;
@@ -225,8 +262,8 @@ export function setTaskStatus(id: string, status: Task['status']) {
     const done = status === 'done';
     let next: Db = { ...d, tasks: d.tasks.map((x) => (x.id === id ? { ...x, status, completedAt: done ? now() : undefined, completedBy: done ? me() : undefined } : x)), notifications: done || status === 'cancelled' ? d.notifications.filter((n) => !n.id.startsWith(`rem_${id}`)) : d.notifications };
     if (done) {
-      const nd = nextOccurrence(t.dueDate, t.recurrence);
-      if (nd) next = { ...next, tasks: [{ ...t, id: uid('t'), dueDate: nd, status: 'pending', completedAt: undefined, completedBy: undefined, createdAt: now() }, ...next.tasks] };
+      const nd = nextOf(t);
+      if (nd) next = { ...next, tasks: [{ ...t, ...nd, id: uid('t'), status: 'pending', completedAt: undefined, completedBy: undefined, createdAt: now() }, ...next.tasks] };
       if (t.createdBy !== me()) next = notify(next, t.createdBy, `${name(d, me())} completed: ${t.title}`, '/tasks', 'assignment');
     }
     return withEvent(next, { assetId: t.assetId, type: 'task', text: `Task “${t.title}” → ${status.replace('_', ' ')}`, ...ownerOf(t) });
@@ -241,14 +278,16 @@ export function saveDoc(doc: Doc) {
     guardWrite(d);
     const isNew = !d.docs.some((x) => x.id === doc.id);
     let next: Db = { ...d, docs: isNew ? [doc, ...d.docs] : d.docs.map((x) => (x.id === doc.id ? doc : x)) };
-    if (isNew && doc.expiryDate) next = { ...next, obligations: [{ id: uid('ob'), title: `${doc.title} expires${doc.ownerType === 'member' ? ` — ${name(d, doc.ownerId)}` : ''}`, type: 'registration', assetId: doc.ownerType === 'asset' ? doc.ownerId : undefined, memberId: doc.ownerType === 'member' ? doc.ownerId : undefined, dueDate: doc.expiryDate, recurrence: 'none', autoRenew: false, reminders: ['rp_30d', 'rp_7d'], status: 'open', ...ownerOf(doc), createdBy: me(), createdAt: now() } as Obligation, ...next.obligations] };
+    if (isNew && doc.expiryDate) next = { ...next, obligations: [{ id: uid('ob'), title: `${doc.title} expires${doc.ownerType === 'member' ? ` — ${name(d, doc.ownerId)}` : ''}`, type: 'registration', docId: doc.id, assetId: doc.ownerType === 'asset' ? doc.ownerId : undefined, memberId: doc.ownerType === 'member' ? doc.ownerId : undefined, dueDate: doc.expiryDate, recurrence: 'none', autoRenew: false, reminders: ['rp_30d', 'rp_7d'], status: 'open', ...ownerOf(doc), createdBy: me(), createdAt: now() } as Obligation, ...next.obligations] };
     return withEvent(next, { assetId: doc.ownerType === 'asset' ? doc.ownerId : undefined, type: 'document', text: `${isNew ? 'Document added' : 'Document updated'}: ${doc.title}${doc.ownerType === 'member' ? ` (${name(d, doc.ownerId)})` : ''}`, ...ownerOf(doc) });
   });
 }
 export function deleteDoc(id: string) {
   setDb((d) => {
     const doc = d.docs.find((x) => x.id === id)!;
-    return withEvent({ ...d, docs: d.docs.filter((x) => x.id !== id) }, { assetId: doc.ownerType === 'asset' ? doc.ownerId : undefined, type: 'document', text: `Document deleted: ${doc.title}`, ...ownerOf(doc) });
+    // Its own expiry reminder goes with it; the asset / person it belonged to is not touched.
+    const obligations = d.obligations.map((o) => (o.docId === id && o.status === 'open' ? { ...o, status: 'cancelled' as const } : o));
+    return withEvent({ ...d, docs: d.docs.filter((x) => x.id !== id), obligations }, { assetId: doc.ownerType === 'asset' ? doc.ownerId : undefined, type: 'document', text: `Document deleted: ${doc.title}`, ...ownerOf(doc) });
   });
 }
 
@@ -302,7 +341,7 @@ export function inviteMember(memberId: string, channel: 'whatsapp' | 'sms', role
   const g = entitlement(d0, 'member');
   if (!g.ok) throw new ActionError(g.reason);
   const m = d0.members.find((x) => x.id === memberId)!;
-  if (!m.mobile || !/^[6-9]\d{9}$/.test(m.mobile)) throw new ActionError('Add a valid 10-digit mobile number to send an invite');
+  if (!m.mobile || ((m.dial ?? '91') === '91' ? !/^[6-9]\d{9}$/.test(m.mobile) : !/^\d{6,12}$/.test(m.mobile))) throw new ActionError('Add a valid mobile number to send an invite');
   if (d0.members.some((x) => x.id !== memberId && x.mobile === m.mobile && (x.state === 'joined' || x.state === 'self' || x.state === 'invited'))) throw new ActionError('Someone in the family already uses this mobile number');
   setDb((d) => {
     let next: Db = { ...d, members: d.members.map((x) => (x.id === memberId ? { ...x, state: 'invited', role, invitedAt: now(), inviteExpiresAt: addDays(today(), 7), inviteChannel: channel } : x)) };
@@ -374,15 +413,15 @@ export function payNow(method?: string) {
 export function syncReminders(userId: string) {
   setDb((d) => {
     let next = d;
-    const items: { key: string; title: string; due: string; rem: string[]; link: string; space: Space; owner?: string; assignee?: string }[] = [];
-    d.obligations.filter((o) => o.status === 'open' && (!o.snoozedUntil || o.snoozedUntil <= today())).forEach((o) => items.push({ key: o.id, title: o.title, due: o.dueDate, rem: o.reminders, link: o.assetId ? `/assets/${o.assetId}#due` : '/tasks?tab=reminders', space: o.space, owner: o.privateOwnerId }));
-    d.tasks.filter((t) => t.status === 'pending' || t.status === 'in_progress').forEach((t) => items.push({ key: t.id, title: t.title, due: t.dueDate, rem: t.reminders, link: '/tasks', space: t.space, owner: t.privateOwnerId, assignee: t.assigneeId }));
+    const items: { key: string; title: string; due: string; time?: string; rem: string[]; link: string; space: Space; owner?: string; assignee?: string }[] = [];
+    d.obligations.filter((o) => o.status === 'open' && (!o.snoozedUntil || o.snoozedUntil <= today())).forEach((o) => items.push({ key: o.id, title: o.title, due: o.dueDate, time: o.dueTime, rem: o.reminders, link: o.assetId ? `/assets/${o.assetId}#due` : '/tasks?tab=reminders', space: o.space, owner: o.privateOwnerId }));
+    d.tasks.filter((t) => t.status === 'pending' || t.status === 'in_progress').forEach((t) => items.push({ key: t.id, title: t.title, due: t.dueDate, time: t.dueTime, rem: t.reminders, link: '/tasks', space: t.space, owner: t.privateOwnerId, assignee: t.assigneeId }));
     for (const it of items) {
       // family items reach every joined member; private items only their owner; tasks also their assignee (PRD §8.4)
       if (it.space === 'private' && it.owner !== userId) continue;
       if (it.assignee && it.assignee !== userId && it.space === 'family' && d.members.find((m) => m.id === userId)?.role === 'view_only') continue;
-      const t = new Date(it.due + 'T09:00:00').getTime();
-      const fired = it.rem.map((id) => d.presets.find((p) => p.id === id)).filter((p): p is NonNullable<typeof p> => !!p && t - p.minutesBefore * 60_000 <= Date.now()).sort((a, b) => a.minutesBefore - b.minutesBefore)[0];
+      const t = new Date(`${it.due}T${it.time || '09:00'}:00`).getTime();
+      const fired = it.rem.map((id) => d.presets.find((p) => p.id === id)).filter((p): p is NonNullable<typeof p> => !!p && reminderAt(p, it.due, it.time) <= Date.now()).sort((a, b) => a.minutesBefore - b.minutesBefore)[0];
       if (!fired) continue;
       const days = Math.round((t - Date.now()) / 86_400_000);
       next = notify(next, userId, `${it.title} ${days < 0 ? `was due ${fmtDate(it.due)}` : days === 0 ? 'is due today' : `is due ${fmtDate(it.due)}`}`, it.link, 'reminder', `rem_${it.key}_${fired.id}_${userId}`);

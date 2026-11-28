@@ -12,6 +12,7 @@ import { alertsFor, assetValue, covLabel, covState, lifecycleCost, nextDue, next
 import { addDays, cx, daysUntil, fileSize, fmtDate, fmtDateTime, inr, timeAgo, today } from '../lib/utils';
 import { CovBadge, ObBadge, TaskBadge } from '../components/common';
 import { AssetIcon } from '../components/Icons';
+import { PhotoStrip } from '../components/ui/ImagePicker';
 import { Avatar, Badge, Empty, KV } from '../components/ui/Misc';
 import { ActionSheet, Confirm, Sheet, type SheetAction } from '../components/ui/Modal';
 import { QrCode as Qr } from '../components/ui/Qr';
@@ -138,7 +139,7 @@ function Asset360({ a }: { a: Asset }) {
           </div>
         </div>
         <div className="a-hero-id">
-          <span className="a-hero-icon"><AssetIcon categoryIcon={cat?.icon} subcategoryId={a.subcategoryId} size={30} /></span>
+          <span className="a-hero-icon">{a.photos?.length ? <img src={a.photos[0]} alt="" className="a-hero-photo" /> : <AssetIcon categoryIcon={cat?.icon} subcategoryId={a.subcategoryId} size={30} />}</span>
           <div style={{ minWidth: 0 }}>
             <h1>{a.name}</h1>
             <p>{cat?.name} › {sub?.name} · {a.code}</p>
@@ -151,6 +152,7 @@ function Asset360({ a }: { a: Asset }) {
           <span className="hchip">{a.space === 'private' ? <><Lock size={11} /> Private</> : <><Users size={11} /> Family</>}</span>
         </div>
       </header>
+      {!!a.photos?.length && <PhotoStrip photos={a.photos} />}
 
       <div className="a-facts">
         <div><em>Current value</em><b>{inr(val.value, { compact: true })}</b><small>{val.estimated ? 'estimated' : val.asOf ? `as of ${fmtDate(val.asOf).slice(0, 6)}` : ''}</small></div>
@@ -206,12 +208,12 @@ function Asset360({ a }: { a: Asset }) {
 
       <SecBox c={collapsed} t={toggle} id="due" title="Due & reminders" icon={<Bell size={15} />} count={obs.length} action={<AddBtn on={() => open({ kind: 'obligation', assetId: a.id })} />}>
         {obs.length === 0 ? <Empty icon={<Bell size={18} />} title="Nothing due">{editable && <button className="btn btn-sm btn-primary" onClick={w(() => open({ kind: 'obligation', assetId: a.id }))}>Add reminder</button>}</Empty> : obs.slice(0, 5).map((o) => {
-          const nr = nextReminder(db, o.dueDate, o.reminders);
+          const nr = nextReminder(db, o.dueDate, o.reminders, o.dueTime);
           return (
             <div key={o.id} className={cx('card-row', obState(o))}>
               <div className="grow" style={{ minWidth: 0 }}>
                 <b className="small">{o.title}</b>
-                <span className="xs muted" style={{ display: 'block' }}>{fmtDate(o.dueDate)}{o.amount ? ` · ${inr(o.amount)}` : ''}{o.recurrence !== 'none' ? ` · repeats ${o.recurrence.replace('_', '-')}` : ''}</span>
+                <span className="xs muted" style={{ display: 'block' }}>{fmtDate(o.dueDate)}{o.amount ? ` · ${inr(o.amount)}` : ''}{o.recurrence !== 'none' ? ` · repeats ${o.recurrence === "custom" ? "on chosen dates" : o.recurrence.replace("_", "-")}` : ''}</span>
                 <span className="xs muted">{a.space === 'private' ? 'Reminds only you' : 'Reminds the family'}{nr ? ` · next ${fmtDateTime(nr)}` : ''}{o.snoozedUntil ? ` · snoozed` : ''}</span>
               </div>
               <ObBadge o={o} />
@@ -334,7 +336,7 @@ function Asset360({ a }: { a: Asset }) {
 
       {sheet && <ActionSheet open onClose={() => setSheet(null)} title={sheet.title} actions={sheet.actions} />}
       <Confirm open={!!confirm} title={confirm?.title ?? ''} message={confirm?.message ?? ''} confirmLabel={confirm?.label} danger={!confirm?.label} onConfirm={() => confirm?.run()} onClose={() => setConfirm(null)} />
-      <Sheet open={qr} onClose={() => setQr(false)} title={`QR label — ${a.code}`} footer={<button className="btn btn-primary btn-block" onClick={() => nav(`/more/qr?ids=${a.id}`)}><Printer size={15} /> Print label</button>}>
+      <Sheet open={qr} onClose={() => setQr(false)} title={`QR label — ${a.code}`} footer={<button className="btn btn-primary btn-block" onClick={() => { setQr(false); nav(`/more/qr?ids=${a.id}&from=asset`); }}><Printer size={15} /> Print label</button>}>
         <div style={{ display: 'grid', justifyItems: 'center', gap: 8 }}><Qr value={`${window.location.origin}${import.meta.env.BASE_URL}assets/${a.id}`} size={200} /><b>{a.name}</b><span className="xs muted">Scan with a phone camera to open this page</span></div>
       </Sheet>
       <Sheet open={!!doc} onClose={() => setDoc(null)} title={doc?.title} subtitle={doc ? `${doc.category} · ${doc.pages} page${doc.pages > 1 ? 's' : ''} · ${fileSize(doc.size)}` : ''}

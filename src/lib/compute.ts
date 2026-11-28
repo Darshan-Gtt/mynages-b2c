@@ -1,5 +1,5 @@
-import type { Asset, Coverage, Db, Member, Obligation, Task } from './types';
-import { daysUntil, today } from './utils';
+import type { Asset, Coverage, Db, Member, Obligation, ReminderPreset, Task } from './types';
+import { addDays, daysUntil, today } from './utils';
 
 export const memberName = (db: Db, id?: string) => db.members.find((m) => m.id === id)?.name ?? '—';
 export const firstName = (db: Db, id?: string) => memberName(db, id).split(' ')[0];
@@ -92,8 +92,14 @@ export function nextDue(db: Db, assetId: string) {
   return xs.sort((a, b) => a.date.localeCompare(b.date))[0];
 }
 
-export function nextReminder(db: Db, due: string, presetIds: string[]) {
-  const t = new Date(due + 'T09:00:00').getTime();
-  const xs = presetIds.map((id) => db.presets.find((p) => p.id === id)?.minutesBefore).filter((x): x is number => x !== undefined).map((m) => t - m * 60_000).filter((x) => x >= Date.now()).sort((a, b) => a - b);
+/** When a reminder preset fires for an item due on dueDate (at dueTime). Whole-day presets fire at their set time (9 AM unless chosen). */
+export function reminderAt(p: ReminderPreset, dueDate: string, dueTime?: string): number {
+  const days = p.minutesBefore / 1440;
+  if (p.atTime || (p.minutesBefore > 0 && Number.isInteger(days))) return new Date(`${addDays(dueDate, -days)}T${p.atTime ?? '09:00'}:00`).getTime();
+  return new Date(`${dueDate}T${dueTime || '09:00'}:00`).getTime() - p.minutesBefore * 60_000;
+}
+
+export function nextReminder(db: Db, due: string, presetIds: string[], dueTime?: string) {
+  const xs = presetIds.map((id) => db.presets.find((p) => p.id === id)).filter((p): p is ReminderPreset => !!p).map((p) => reminderAt(p, due, dueTime)).filter((x) => x >= Date.now()).sort((a, b) => a - b);
   return xs[0] ? new Date(xs[0]).toISOString() : undefined;
 }

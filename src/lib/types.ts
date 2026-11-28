@@ -4,7 +4,7 @@ export type ID = string;
 export type Space = 'family' | 'private';
 export type FamilyRole = 'owner' | 'adult' | 'view_only';
 export type MemberState = 'self' | 'profile' | 'invited' | 'joined' | 'declined' | 'removed';
-export type Recurrence = 'none' | 'monthly' | 'quarterly' | 'half_yearly' | 'yearly';
+export type Recurrence = 'none' | 'monthly' | 'quarterly' | 'half_yearly' | 'yearly' | 'custom';
 
 /** family_members — a profile until the person joins; joined members can sign in. */
 export interface Member {
@@ -87,6 +87,8 @@ export interface Asset extends Owned {
   tags: string[];
   notes?: string;
   parentId?: ID;
+  /** Up to 5 photos (resized data URLs). */
+  photos?: string[];
   archived: boolean;
   color: string;
 }
@@ -116,6 +118,8 @@ export interface Coverage extends Owned {
   maturityValue?: number;
   nominee?: string;
   agentContactId?: ID;
+  /** Insurer / brand helpline or branch contact. */
+  providerContactId?: ID;
   supersededById?: ID;
 }
 
@@ -126,12 +130,19 @@ export interface Obligation extends Owned {
   id: ID;
   title: string;
   type: ObligationType;
+  /** Name the user gave when the type is "custom" (e.g. "Gas cylinder booking"). */
+  customType?: string;
   assetId?: ID;
   memberId?: ID;
   coverageId?: ID;
+  /** Expiry reminder created for a document. */
+  docId?: ID;
   amount?: number;
   dueDate: string;
+  dueTime?: string;
   recurrence: Recurrence;
+  /** For recurrence "custom": the next dates the user picked, as YYYY-MM-DDTHH:mm. */
+  customDates?: string[];
   autoRenew: boolean;
   reminders: ID[];
   contactId?: ID;
@@ -153,6 +164,7 @@ export interface Task extends Owned {
   priority: 'low' | 'medium' | 'high';
   status: 'pending' | 'in_progress' | 'done' | 'cancelled';
   recurrence: Recurrence;
+  customDates?: string[];
   reminders: ID[];
   completedAt?: string;
   completedBy?: ID;
@@ -170,6 +182,8 @@ export interface Doc extends Owned {
   expiryDate?: string;
   tags: string[];
   notes?: string;
+  /** Values of the category's own fields (Settings → Document categories). */
+  fields?: Record<string, string | number | boolean>;
   fileName: string;
   size: number;
   pages: number;
@@ -183,6 +197,8 @@ export interface Contact {
   phone: string;
   email?: string;
   notes?: string;
+  /** What they do, when the type is "other" (e.g. Gardener). */
+  role?: string;
   fromPhone?: boolean;
 }
 
@@ -190,7 +206,7 @@ export interface AssetContact { id: ID; assetId: ID; contactId: ID; purpose: str
 
 export interface Schedule { id: ID; assetId: ID; title: string; intervalDays: number; nextDue: string; contactId?: ID; active: boolean }
 
-export interface ServiceLog { id: ID; assetId: ID; date: string; provider: string; workDone: string; cost: number; reading?: string; scheduleId?: ID; createdBy: ID }
+export interface ServiceLog { id: ID; assetId: ID; date: string; provider: string; workDone: string; cost: number; reading?: string; scheduleId?: ID; contactId?: ID; createdBy: ID }
 
 export interface Expense { id: ID; assetId: ID; date: string; type: string; amount: number; paidBy: ID; notes?: string; ref?: string; createdBy: ID }
 
@@ -200,11 +216,12 @@ export interface MedicalRecord { id: ID; memberId: ID; type: 'prescription' | 'l
 
 export interface Vaccination { id: ID; memberId: ID; itemType: 'vaccination' | 'checkup'; name: string; dueDate?: string; givenDate?: string; provider?: string; status: 'due' | 'done' | 'skipped' }
 
-export interface Nominee { id: ID; name: string; relationship: string; memberId?: ID; mobile?: string; email?: string; access: 'pending' | 'active' | 'revoked'; items: { type: 'asset' | 'document' | 'coverage'; id: ID }[]; createdAt: string }
+export interface Nominee { id: ID; name: string; relationship: string; memberId?: ID; mobile?: string; dial?: string; email?: string; access: 'pending' | 'active' | 'revoked'; items: { type: 'asset' | 'document' | 'coverage'; id: ID }[]; createdAt: string }
 
 export interface Notification { id: ID; userId: ID | 'all'; text: string; link?: string; at: string; read: boolean; kind: 'reminder' | 'invite' | 'assignment' | 'share' | 'billing' | 'system' }
 
-export interface ReminderPreset { id: ID; label: string; minutesBefore: number; isDefault?: boolean }
+/** minutesBefore counts back from the due date & time; with atTime (HH:mm) it means "N days before, at this time". */
+export interface ReminderPreset { id: ID; label: string; minutesBefore: number; atTime?: string; isDefault?: boolean }
 
 export interface Invoice { no: string; date: string; planId: string; cycle: 'monthly' | 'yearly'; amount: number; gst: number; status: 'paid' | 'failed' | 'refunded'; method: string }
 
@@ -233,6 +250,10 @@ export interface Settings {
   quietHours: boolean;
   modules: Record<'insurance' | 'warranties' | 'maintenance' | 'savings' | 'health' | 'qr' | 'reports', boolean>;
   docCategories: { asset: string[]; person: string[] };
+  /** Extra fields per document category, keyed "asset:Insurance" / "person:Medical". */
+  docFields?: Record<string, FieldDef[]>;
+  /** Reminder types the family created with "Custom", offered again next time. */
+  reminderTypes?: string[];
   consent: { analytics: boolean; marketing: boolean; whatsapp: boolean };
   onboarded: boolean;
 }

@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Calendar, CheckCircle2, Download, Edit3, Eye, FileText, HeartPulse, MessageCircle, Phone, Plus, RefreshCw, Search, ShieldCheck, Smartphone, Star, Syringe, Trash2, Wrench, Link2, TrendingUp,
+  Loader2,
 } from 'lucide-react';
 import { getDb, useDb } from '../lib/store';
 import { useMe } from '../lib/session';
@@ -11,7 +12,9 @@ import { deleteCoverage, deleteDoc, deleteService, removeRow, upsert } from '../
 import { QrCode } from '../components/ui/Qr';
 import { assetValue, covLabel, covState, contactName, memberName, withRelation } from '../lib/compute';
 import { addDays, cx, daysUntil, download, fileSize, fmtDate, inr, sum, today, toCsv, uid } from '../lib/utils';
-import { PHONE_CONTACTS } from '../data/seed';
+import { readPhoneBook, type PhoneBook } from '../lib/phonebook';
+import { ContactSelect } from '../components/ui/ContactPick';
+import { docFieldsOf } from '../components/editors/DocFields';
 import { CONTACT_TYPES } from '../data/masters';
 import { CovBadge, MenuBtn, TopBar } from '../components/common';
 import { Badge, Empty, KV, Pills, Segmented } from '../components/ui/Misc';
@@ -83,12 +86,12 @@ export function DocumentsPage() {
             {canEdit(me, view) && <button className="btn btn-sm btn-danger-outline" onClick={() => { setDel(view); setView(null); }}><Trash2 size={14} /></button>}
           </>}>
           <div className="doc-preview"><FileText size={36} /><b>{view.fileName}</b><span className="xs muted">{view.pages} page{view.pages > 1 ? 's' : ''} · {fileSize(view.size)}</span></div>
-          <KV rows={[['Number', view.number], ['Issued by', view.issuer], ['Issued', view.issueDate && fmtDate(view.issueDate)], ['Expires', view.expiryDate && fmtDate(view.expiryDate)], ['Tags', view.tags.join(', ')], ['Notes', view.notes], ['Space', view.space === 'private' ? 'Private' : 'Family']]} />
+          <KV rows={[...docFieldsOf(db, view.ownerType === 'member' ? 'person' : 'asset', view.category).filter((f) => view.fields?.[f.key] !== undefined).map((f) => [f.label, f.type === 'boolean' ? (view.fields![f.key] ? 'Yes' : 'No') : f.type === 'currency' ? inr(Number(view.fields![f.key])) : f.type === 'date' ? fmtDate(String(view.fields![f.key])) : String(view.fields![f.key])] as [string, string]), ['Number', view.number], ['Issued by', view.issuer], ['Issued', view.issueDate && fmtDate(view.issueDate)], ['Expires', view.expiryDate && fmtDate(view.expiryDate)], ['Tags', view.tags.join(', ')], ['Notes', view.notes], ['Space', view.space === 'private' ? 'Private' : 'Family']]} />
           {view.ownerType === 'asset' && <Link to={`/assets/${view.ownerId}`} className="btn btn-sm" style={{ marginTop: 12 }}><Eye size={14} /> Open asset 360°</Link>}
           {view.ownerType === 'member' && <Link to={`/more/family/${view.ownerId}`} className="btn btn-sm" style={{ marginTop: 12 }}><Eye size={14} /> Open {memberName(db, view.ownerId).split(' ')[0]}’s profile</Link>}
         </Sheet>
       )}
-      <Confirm open={!!del} title="Delete document?" message={`${del?.title} will be removed. Any expiry reminder stays until you cancel it.`} onConfirm={() => { if (del) { deleteDoc(del.id); toast({ type: 'success', title: 'Document deleted' }); } }} onClose={() => setDel(null)} />
+      <Confirm open={!!del} title="Delete document?" message={del ? `“${del.title}” will be removed everywhere — also from ${del.ownerType === 'asset' ? `the asset “${ownerLabel(del)}” (its Documents tab)` : `${ownerLabel(del).split(' ')[0]}’s profile`}. ${del.ownerType === 'asset' ? 'The asset itself, its insurance, reminders and history stay as they are.' : 'The person’s other records stay as they are.'}${db.obligations.some((o) => o.docId === del.id && o.status === 'open') ? ' Its expiry reminder is cancelled too.' : ''} This can’t be undone.` : ''} onConfirm={() => { if (del) { deleteDoc(del.id); toast({ type: 'success', title: 'Document deleted' }); } }} onClose={() => setDel(null)} />
     </div>
   );
 }
@@ -282,6 +285,18 @@ export function ContactsPage() {
   const [imp, setImp] = useState(false);
   const [pick, setPick] = useState<string[]>([]);
   const [del, setDel] = useState<Contact | null>(null);
+  const [book, setBook] = useState<PhoneBook | null>(null);
+  const [bq, setBq] = useState('');
+  const openBook = () => {
+    setPick([]); setBq(''); setBook(null); setImp(true);
+    readPhoneBook().then((b) => {
+      if (b.source === 'cancelled') { setImp(false); return; }
+      setBook(b);
+      if (b.source === 'picker') setPick(b.list.filter((x) => !existing.has(x.phone)).map((x) => x.phone));
+    });
+  };
+  const bookList = (book?.list ?? []).filter((p) => !bq || `${p.name} ${p.phone}`.toLowerCase().includes(bq.toLowerCase()));
+  const guessType = (n: string): Contact['type'] => (/dr\.|doctor|clinic|hospital/i.test(n) ? 'doctor' : /agent|lic|insurance/i.test(n) ? 'insurance_agent' : /\bca\b|chartered/i.test(n) ? 'ca' : /lawyer|advocate/i.test(n) ? 'lawyer' : /plumber|electric|carpenter|repair|service|mechanic|technician|wash/i.test(n) ? 'service_provider' : 'other');
   const list = db.contacts.filter((c) => (type === 'all' || c.type === type) && (!q || `${c.name} ${c.phone} ${c.notes ?? ''}`.toLowerCase().includes(q.toLowerCase()))).sort((a, b) => a.name.localeCompare(b.name));
   const mapped = (id: string) => db.assetContacts.filter((x) => x.contactId === id);
   const existing = new Set(db.contacts.map((c) => c.phone));
@@ -289,7 +304,7 @@ export function ContactsPage() {
   return (
     <div className="page">
       <TopBar title="Contacts" back="/more" sub={`${db.contacts.length} contacts`} actions={editable && <>
-        <button className="icon-btn" aria-label="Import from phone" onClick={() => { setPick([]); setImp(true); }}><Smartphone size={19} /></button>
+        <button className="icon-btn" aria-label="Import from phone" onClick={openBook}><Smartphone size={19} /></button>
         <button className="icon-btn" aria-label="Add contact" onClick={() => open({ kind: 'contact' })}><Plus size={20} /></button>
       </>} />
       <div className="pad-x stack" style={{ gap: 8 }}>
@@ -302,14 +317,14 @@ export function ContactsPage() {
         {list.length === 0 && <Empty icon={<Phone size={20} />} title="No contacts" />}
         {list.map((c) => (
           <div key={c.id} className="mrow">
-            <button className="row-text" style={{ textAlign: 'left', background: 'none', border: 0, padding: 0, color: 'inherit', cursor: 'pointer' }} onClick={() => setSel(c)}><b>{c.name}{c.fromPhone && <Smartphone size={11} style={{ display: 'inline', marginLeft: 4 }} />}</b><em>{typeLabel(c.type)} · {c.phone}{mapped(c.id).length ? ` · ${mapped(c.id).length} asset${mapped(c.id).length > 1 ? 's' : ''}` : ''}</em></button>
+            <button className="row-text" style={{ textAlign: 'left', background: 'none', border: 0, padding: 0, color: 'inherit', cursor: 'pointer' }} onClick={() => setSel(c)}><b>{c.name}{c.fromPhone && <Smartphone size={11} style={{ display: 'inline', marginLeft: 4 }} />}</b><em>{c.type === 'other' && c.role ? c.role : typeLabel(c.type)} · {c.phone}{mapped(c.id).length ? ` · ${mapped(c.id).length} asset${mapped(c.id).length > 1 ? 's' : ''}` : ''}</em></button>
             <a className="icon-btn sm" href={`tel:${c.phone}`} aria-label={`Call ${c.name}`}><Phone size={16} /></a>
             <a className="icon-btn sm" href={`https://wa.me/91${c.phone}`} target="_blank" rel="noreferrer" aria-label={`WhatsApp ${c.name}`}><MessageCircle size={16} /></a>
           </div>
         ))}
       </div>
       {sel && (
-        <Sheet open onClose={() => setSel(null)} title={sel.name} subtitle={typeLabel(sel.type)}
+        <Sheet open onClose={() => setSel(null)} title={sel.name} subtitle={sel.type === 'other' && sel.role ? sel.role : typeLabel(sel.type)}
           footer={editable ? <><button className="btn btn-sm" onClick={() => { const c = sel; setSel(null); open({ kind: 'contact', contact: c }); }}><Edit3 size={14} /> Edit</button><button className="btn btn-sm btn-danger-outline" onClick={() => { setDel(sel); setSel(null); }}><Trash2 size={14} /> Delete</button></> : undefined}>
           <div className="row" style={{ gap: 8, marginBottom: 12 }}>
             <a className="btn btn-primary btn-sm" href={`tel:${sel.phone}`}><Phone size={14} /> Call</a>
@@ -322,21 +337,30 @@ export function ContactsPage() {
       )}
       <Sheet open={imp} onClose={() => setImp(false)} title="Import from phone" subtitle="Pick the people you call for home, vehicle, health…" full
         footer={<button className="btn btn-primary" disabled={!pick.length} onClick={() => {
-          pick.forEach((ph) => { const p = PHONE_CONTACTS.find((x) => x.phone === ph)!; upsert('contacts', { id: uid('ct'), name: p.name, phone: p.phone, type: /dr\.|doctor/i.test(p.name) ? 'doctor' : /agent|lic/i.test(p.name) ? 'insurance_agent' : /bank|rm/i.test(p.name) ? 'other' : /neha|rahul/i.test(p.name) ? 'family_friend' : 'service_provider', fromPhone: true }); });
-          toast({ type: 'success', title: `${pick.length} contact${pick.length > 1 ? 's' : ''} imported` }); setImp(false);
+          pick.forEach((ph) => { const p = book!.list.find((x) => x.phone === ph)!; upsert('contacts', { id: uid('ct'), name: p.name, phone: p.phone, type: guessType(p.name), fromPhone: true }); });
+          toast({ type: 'success', title: `${pick.length} contact${pick.length > 1 ? 's' : ''} imported`, message: 'Change the type from the contact if needed' }); setImp(false);
         }}>Import {pick.length || ''}</button>}>
-        <p className="xs muted" style={{ marginBottom: 10 }}>Simulated address book. Only the contacts you select are saved; nothing else leaves your phone.</p>
-        <div className="action-list">
-          {PHONE_CONTACTS.map((p) => {
-            const has = existing.has(p.phone);
-            return (
-              <label key={p.phone} className={cx('action-item', has && 'disabled')}>
-                <input type="checkbox" disabled={has} checked={has || pick.includes(p.phone)} onChange={(e) => setPick(e.target.checked ? [...pick, p.phone] : pick.filter((x) => x !== p.phone))} />
-                <span className="grow">{p.name}<em>{p.phone}{has ? ' · already in Mynages' : ''}</em></span>
-              </label>
-            );
-          })}
-        </div>
+        {!book ? <div className="empty"><Loader2 size={24} className="spinner" /><p className="small">Opening your phone book…</p></div>
+          : book.source === 'denied' ? <div className="alert alert-warning small">Contacts permission was not given. Allow it in phone Settings → Apps → Mynages → Permissions → Contacts, then try again.</div>
+          : book.source === 'error' ? <div className="alert alert-danger small">Couldn’t read the phone book{book.message ? ` (${book.message})` : ''}. Please try again.</div>
+          : (
+          <>
+            <p className="xs muted" style={{ marginBottom: 8 }}>{book.source === 'device' ? `${book.list.length} contacts on this phone. Only the ones you select are saved in Mynages.` : book.source === 'picker' ? 'Contacts you shared from your phone. Untick anyone you don’t want.' : 'Sample address book — in the Android app this shows your real phone contacts.'}</p>
+            {book.list.length > 8 && <label className="search-box" style={{ marginBottom: 8 }}><Search size={16} /><input value={bq} onChange={(e) => setBq(e.target.value)} placeholder="Search name or number" aria-label="Search phone contacts" /></label>}
+            <div className="action-list">
+              {bookList.map((p) => {
+                const has = existing.has(p.phone);
+                return (
+                  <label key={p.phone} className={cx('action-item', has && 'disabled')}>
+                    <input type="checkbox" disabled={has} checked={has || pick.includes(p.phone)} onChange={(e) => setPick(e.target.checked ? [...pick, p.phone] : pick.filter((x) => x !== p.phone))} />
+                    <span className="grow">{p.name}<em>{p.phone}{has ? ' · already in Mynages' : ''}</em></span>
+                  </label>
+                );
+              })}
+              {!bookList.length && <p className="xs muted">No contacts found.</p>}
+            </div>
+          </>
+        )}
       </Sheet>
       <Confirm open={!!del} title="Delete contact?" message="It is unlinked from every asset." onConfirm={() => { if (del) { removeContact(del.id); toast({ type: 'success', title: 'Contact deleted' }); } }} onClose={() => setDel(null)} />
     </div>
@@ -364,7 +388,14 @@ export function SavingsPage() {
   const vals = db.valuations.filter((v) => sav.some((a) => a.id === v.assetId)).sort((a, b) => b.date.localeCompare(a.date));
   return (
     <div className="page">
-      <TopBar title="Savings & investments" back="/more" actions={<button className="icon-btn" aria-label="Add investment" onClick={() => open({ kind: 'asset' })}><Plus size={20} /></button>} />
+      <TopBar title="Savings & investments" back="/more" actions={<button className="icon-btn" aria-label="Add investment" onClick={() => open({ kind: 'asset', categoryId: 'c_sav' })}><Plus size={20} /></button>} />
+      {sav.length === 0 && (
+        <Empty icon={<TrendingUp size={20} />} title="No savings or investments yet">
+          <p className="small">Add your FD, PPF, NPS, mutual funds or gold bonds. This page then shows how much you invested, today’s value and gain, a chart by instrument, upcoming maturities and value history.</p>
+          <button className="btn btn-sm btn-primary" onClick={() => open({ kind: 'asset', categoryId: 'c_sav' })}><Plus size={14} /> Add investment</button>
+        </Empty>
+      )}
+      {sav.length > 0 && <>
       <div className="mini-stats pad-x">
         <div><span className="xs muted">Invested</span><b>{inr(inv, { compact: true })}</b></div>
         <div><span className="xs muted">Current value</span><b>{inr(cur, { compact: true })}</b></div>
@@ -384,6 +415,7 @@ export function SavingsPage() {
           <div className="row-wrap pad-x" style={{ gap: 6, marginTop: 6 }}>{sav.map((a) => <button key={a.id} className="btn btn-xs" onClick={() => open({ kind: 'valuation', assetId: a.id })}>Update {a.name.split(' ')[0]}</button>)}</div>
         </div>
       </section>
+      </>}
     </div>
   );
 }
@@ -444,7 +476,7 @@ export function HealthPage() {
             { key: 'title', label: 'Title', type: 'text', required: true, full: true, placeholder: 'e.g. HbA1c report' },
             { key: 'date', label: 'Date', type: 'date', required: true, validate: (x) => (String(x) > today() ? 'Can’t be in the future' : undefined) },
             { key: 'hospital', label: 'Hospital / lab', type: 'text' },
-            { key: 'doctorContactId', label: 'Doctor', type: 'select', options: db.contacts.filter((c) => c.type === 'doctor').map((c) => ({ value: c.id, label: c.name })) },
+            { key: 'doctorContactId', label: 'Doctor', type: 'custom', render: (val, set) => <ContactSelect value={val as string | undefined} onChange={set} type="doctor" label="Doctor" /> },
             { key: 'notes', label: 'Notes', type: 'textarea' },
           ]}
           initial={rec === 'new' ? { memberId: who !== 'all' ? who : undefined, type: 'prescription', date: today() } : { ...rec }}
@@ -481,7 +513,7 @@ export function QrPage() {
   const chosen = live.filter((a) => sel.includes(a.id));
   return (
     <div className="page">
-      <TopBar title="QR labels" back="/more" sub="Stick on an asset · scan to open its 360°" />
+      <TopBar title="QR labels" back={params.get('from') ? true : '/more'} sub="Stick on an asset · scan to open its 360°" />
       <div className="row between pad-x" style={{ marginBottom: 6 }}>
         <span className="small">{sel.length} selected</span>
         <div className="row" style={{ gap: 6 }}><button className="btn btn-xs" onClick={() => setSel(sel.length === live.length ? [] : live.map((a) => a.id))}>{sel.length === live.length ? 'Clear' : 'Select all'}</button><button className="btn btn-xs btn-primary" disabled={!sel.length} onClick={() => setPreview(true)}>Preview & print</button></div>

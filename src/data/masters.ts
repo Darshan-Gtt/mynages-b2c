@@ -118,9 +118,9 @@ export const CONTACT_TYPES = ['service_provider', 'dealer', 'insurance_agent', '
 
 // Plans (PRD §10.2 — prices indicative)
 export const PLANS = [
-  { id: 'individual', name: 'Individual', monthly: 99, yearly: 990, members: 0, assets: 100, storageGb: 5, ai: 10, modules: ['insurance', 'warranties', 'maintenance', 'qr', 'reports'], sharing: 'No', reminders: 'Push + WhatsApp' },
-  { id: 'family', name: 'Family', monthly: 199, yearly: 1990, members: 4, assets: 300, storageGb: 20, ai: 30, modules: ['insurance', 'warranties', 'maintenance', 'qr', 'reports', 'health'], sharing: '7-day links', reminders: 'Push + WhatsApp' },
-  { id: 'family_plus', name: 'Family Plus', monthly: 349, yearly: 3490, members: 8, assets: Infinity, storageGb: 50, ai: 100, modules: ['insurance', 'warranties', 'maintenance', 'qr', 'reports', 'health', 'savings'], sharing: 'Any expiry', reminders: 'Push + WhatsApp + email' },
+  { id: 'individual', trialDays: 14, name: 'Individual', monthly: 99, yearly: 990, members: 0, assets: 100, storageGb: 5, ai: 10, modules: ['insurance', 'warranties', 'maintenance', 'qr', 'reports'], sharing: 'No', reminders: 'Push + WhatsApp' },
+  { id: 'family', trialDays: 18, name: 'Family', monthly: 199, yearly: 1990, members: 4, assets: 300, storageGb: 20, ai: 30, modules: ['insurance', 'warranties', 'maintenance', 'qr', 'reports', 'health'], sharing: '7-day links', reminders: 'Push + WhatsApp' },
+  { id: 'family_plus', trialDays: 28, name: 'Family Plus', monthly: 349, yearly: 3490, members: 8, assets: Infinity, storageGb: 50, ai: 100, modules: ['insurance', 'warranties', 'maintenance', 'qr', 'reports', 'health', 'savings'], sharing: 'Any expiry', reminders: 'Push + WhatsApp + email' },
 ] as const;
 export type PlanId = (typeof PLANS)[number]['id'];
 export const planOf = (id: string) => PLANS.find((p) => p.id === id) ?? PLANS[1];

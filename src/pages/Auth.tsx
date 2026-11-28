@@ -4,8 +4,9 @@ import { getDb, resetNewUser, useDb } from '../lib/store';
 import { signIn } from '../lib/session';
 import { acceptInvite, syncReminders } from '../lib/actions';
 import { DEMO_OTP, phoneOf, sleep } from '../lib/utils';
+import { checkValue } from '../lib/rules';
 import { COUNTRIES, countryOf, validMobile } from '../data/countries';
-import { Field, Input, OtpInput, SubmitButton } from '../components/ui/Form';
+import { Field, Input, OtpInput, Select, SubmitButton } from '../components/ui/Form';
 import { PhoneInput } from '../components/ui/PhoneInput';
 import { Avatar } from '../components/ui/Misc';
 import { Sheet } from '../components/ui/Modal';
@@ -68,8 +69,9 @@ export function AuthPage() {
   };
   const create = (e: React.FormEvent) => {
     e.preventDefault();
-    if (name.trim().length < 2) { setErr('Enter your name'); return; }
-    if (via === 'google' && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) { setErr('Enter a valid email address'); return; }
+    const nameErr = name.trim() ? checkValue('name', 'Your name', 'text', name.trim()) : 'Enter your name';
+    if (nameErr) { setErr(nameErr); return; }
+    if (via === 'google') { const e2 = email.trim() ? checkValue('email', 'Email', 'email', email.trim()) : 'Enter your email'; if (e2) { setErr(e2); return; } }
     resetNewUser(name.trim(), via === 'mobile' ? mobile : undefined, { dial: via === 'mobile' ? country.dial : undefined, email: via === 'google' ? email.trim() : undefined, country: country.iso, currency: country.currency, tz: country.tz });
     signIn('m_me');
   };
@@ -151,11 +153,11 @@ export function AuthPage() {
           <span className="icon-tile lg"><UserPlus size={26} /></span>
           <h2>Create your account</h2>
           <p className="small muted">{via === 'mobile' ? <>{phone} is verified. </> : null}Tell us your name to set up your family workspace.</p>
-          <Field label="Your name" error={via === 'mobile' || name.trim().length < 2 ? err : undefined}><Input autoFocus value={name} onChange={(e) => { setName(e.target.value); setErr(undefined); }} placeholder="e.g. Ananya Deshpande" /></Field>
-          {via === 'google' && <Field label="Google account email" error={name.trim().length >= 2 ? err : undefined}><Input type="email" value={email} onChange={(e) => { setEmail(e.target.value); setErr(undefined); }} placeholder="you@gmail.com" /></Field>}
+          <Field label="Your name" error={via === 'mobile' || !name.trim() || checkValue('name', 'Your name', 'text', name.trim()) ? err : undefined}><Input autoFocus maxLength={60} autoCapitalize="words" value={name} onChange={(e) => { setName(e.target.value); setErr(undefined); }} placeholder="e.g. Ananya Deshpande" /></Field>
+          {via === 'google' && <Field label="Google account email" error={name.trim() && !checkValue('name', 'Your name', 'text', name.trim()) ? err : undefined}><Input type="email" inputMode="email" maxLength={80} autoCapitalize="off" value={email} onChange={(e) => { setEmail(e.target.value); setErr(undefined); }} placeholder="you@gmail.com" /></Field>}
           {via === 'google' && (
             <Field label="Country">
-              <select className="select" value={iso} onChange={(e) => setIso(e.target.value)}>{COUNTRIES.map((c) => <option key={c.iso} value={c.iso}>{c.name}</option>)}</select>
+              <Select aria-label="Country" value={iso} onChange={(e) => setIso(e.target.value)}>{COUNTRIES.map((c) => <option key={c.iso} value={c.iso}>{c.name}</option>)}</Select>
             </Field>
           )}
           <SubmitButton className="btn-block btn-lg">Continue</SubmitButton>

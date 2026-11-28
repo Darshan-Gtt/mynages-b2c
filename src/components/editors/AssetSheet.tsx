@@ -1,10 +1,13 @@
 import { useMemo, useState } from 'react';
-import { ArrowLeft, Lock, Users } from 'lucide-react';
+import { ArrowLeft, Lock, Plus, Users } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Sheet } from '../ui/Modal';
 import { EntityForm, type FieldSpec } from '../ui/EntityForm';
 import { useToast } from '../ui/Toast';
 import { CatIcon } from '../Icons';
+import { CategorySheet } from './CategorySheet';
+import { ImagePicker } from '../ui/ImagePicker';
+import { canEdit } from '../../lib/access';
 import { getDb, useDb } from '../../lib/store';
 import { useMe, useSpace } from '../../lib/session';
 import { canCreateIn } from '../../lib/access';
@@ -31,6 +34,8 @@ export function AssetSheet({ asset, categoryId, onSaved, onClose }: { asset?: As
   const [cat, setCat] = useState(asset?.categoryId ?? categoryId);
   const [subId, setSubId] = useState(asset?.subcategoryId);
   const [allowDup, setAllowDup] = useState(false);
+  const [custom, setCustom] = useState<null | 'category' | 'type'>(null);
+  const canCustomise = canEdit(me);
   const sub = db.subcategories.find((s) => s.id === subId);
   const category = db.categories.find((c) => c.id === cat);
   const defaultSpace: Space = asset?.space ?? (canCreateIn(me, activeSpace) ? activeSpace : 'private');
@@ -38,7 +43,7 @@ export function AssetSheet({ asset, categoryId, onSaved, onClose }: { asset?: As
   const initial = useMemo<V>(() => {
     const v: V = {
       name: asset?.name ?? '', space: defaultSpace, ownerMemberId: asset?.ownerMemberId ?? me.id, propertyId: asset?.propertyId ?? db.properties[0]?.id,
-      purchaseDate: asset?.purchaseDate ?? '', purchaseCost: asset?.purchaseCost ?? '', invoiceNo: asset?.invoiceNo ?? '', serialNo: asset?.serialNo ?? '', tags: (asset?.tags ?? []).join(', '), notes: asset?.notes ?? '',
+      purchaseDate: asset?.purchaseDate ?? '', purchaseCost: asset?.purchaseCost ?? '', invoiceNo: asset?.invoiceNo ?? '', serialNo: asset?.serialNo ?? '', tags: (asset?.tags ?? []).join(', '), notes: asset?.notes ?? '', photos: asset?.photos ?? [],
     };
     Object.entries(asset?.fields ?? {}).forEach(([k, val]) => (v[`f__${k}`] = val));
     return v;
@@ -48,13 +53,14 @@ export function AssetSheet({ asset, categoryId, onSaved, onClose }: { asset?: As
     { key: 'name', label: 'Name', type: 'text', required: true, full: true, placeholder: `e.g. ${sub.name === 'Car' ? 'Honda City' : sub.name === 'House / flat' ? 'Baner flat' : sub.name}` },
     { key: 'space', label: 'Who can see it', type: 'select', required: true, disabled: !isNew, options: [...(canCreateIn(me, 'family') ? [{ value: 'family', label: `Family — ${db.settings.familyName}` }] : []), { value: 'private', label: 'Only me (private space)' }], hint: isNew ? 'Private items are hidden from everyone else and left out of family totals' : 'Use “Sharing & visibility” on the asset page to move it' },
     { key: 'ownerMemberId', label: 'Owner', type: 'select', required: true, options: db.members.filter((m) => m.state !== 'removed' && m.state !== 'declined').map((m) => ({ value: m.id, label: `${m.name.split(' ')[0]} (${m.relation === 'Self' ? 'Owner' : m.relation})` })) },
-    { key: 'propertyId', label: 'Kept at', type: 'select', options: db.properties.map((p) => ({ value: p.id, label: p.name })), emptyLabel: 'Not at a property' },
+    { key: 'photos', label: 'Photos (optional · up to 5)', type: 'custom', render: (val, set) => <ImagePicker value={(val as string[] | undefined) ?? []} onChange={set} /> },
+    { key: 'propertyId', label: 'Kept at (which home)', type: 'select', options: db.properties.map((p) => ({ value: p.id, label: p.name })), emptyLabel: 'Not at a property' },
     ...sub.fields.map((f, i) => ({ ...spec(f), section: i === 0 ? `${sub.name} details` : undefined })),
     { key: 'purchaseDate', label: 'Purchase date', type: 'date', section: 'Purchase', validate: (v) => (v && String(v) > today() ? 'Can’t be in the future' : undefined) },
     { key: 'purchaseCost', label: 'Purchase cost', type: 'currency', min: 0 },
-    { key: 'invoiceNo', label: 'Invoice / bill no.', type: 'text' },
-    { key: 'serialNo', label: 'Serial number', type: 'text', showIf: () => ['c_elec', 'c_app', 'c_veh'].includes(sub.categoryId) },
-    { key: 'tags', label: 'Tags', type: 'text', placeholder: 'comma separated' },
+    { key: 'invoiceNo', label: 'Invoice / bill no. (on the shop bill)', type: 'text' },
+    { key: 'serialNo', label: 'Serial number (on the sticker or box)', type: 'text', showIf: () => ['c_elec', 'c_app', 'c_veh'].includes(sub.categoryId) },
+    { key: 'tags', label: 'Tags (words to find it later)', type: 'text', placeholder: 'e.g. gift, locker, Diwali 2024', hint: 'Optional · comma separated · used by search' },
     { key: 'notes', label: 'Notes', type: 'textarea' },
   ] : [];
 
@@ -66,7 +72,7 @@ export function AssetSheet({ asset, categoryId, onSaved, onClose }: { asset?: As
       ...(asset ?? ({ statusId: 'st_active', archived: false, color: ['#0E9384', '#3B6FB6', '#C98A1B', '#8E5BC7', '#C2557A'][Math.floor(Math.random() * 5)], code: '', createdBy: me.id, createdAt: '' } as Asset)),
       id: asset?.id ?? '', name: String(v.name).trim(), categoryId: category!.id, subcategoryId: sub!.id, ownerMemberId: String(v.ownerMemberId), propertyId: (v.propertyId as string) || undefined,
       purchaseDate: (v.purchaseDate as string) || undefined, purchaseCost: v.purchaseCost === '' || v.purchaseCost === undefined ? undefined : Number(v.purchaseCost), invoiceNo: (v.invoiceNo as string) || undefined,
-      serialNo: (v.serialNo as string) || undefined, fields: fieldsOut, tags: String(v.tags ?? '').split(',').map((x) => x.trim()).filter(Boolean), notes: (v.notes as string) || undefined,
+      serialNo: (v.serialNo as string) || undefined, fields: fieldsOut, tags: String(v.tags ?? '').split(',').map((x) => x.trim()).filter(Boolean), notes: (v.notes as string) || undefined, photos: (v.photos as string[] | undefined)?.length ? (v.photos as string[]) : undefined,
       space, privateOwnerId: space === 'private' ? asset?.privateOwnerId ?? me.id : undefined,
     };
     if (space === 'family') {
@@ -91,6 +97,7 @@ export function AssetSheet({ asset, categoryId, onSaved, onClose }: { asset?: As
                 <span>{c.name}</span>
               </button>
             ))}
+            {canCustomise && <button className="ctile add-own" onClick={() => setCustom('category')}><span className="icon-tile"><Plus size={20} /></span><span>Your own category</span></button>}
           </div>
         </div>
       )}
@@ -101,9 +108,10 @@ export function AssetSheet({ asset, categoryId, onSaved, onClose }: { asset?: As
             {db.subcategories.filter((s) => s.categoryId === category.id).map((s) => (
               <button key={s.id} className="mrow" onClick={() => setSubId(s.id)}>
                 <span className="icon-tile sm"><CatIcon name={category.icon} size={16} /></span>
-                <span className="row-text"><b>{s.name}</b><em>{s.fields.slice(0, 3).map((f) => f.label).join(' · ')}</em></span>
+                <span className="row-text"><b>{s.name}</b><em>{s.fields.slice(0, 3).map((f) => f.label).join(' · ') || 'Name, purchase, notes'}</em></span>
               </button>
             ))}
+            {canCustomise && <button className="mrow" onClick={() => setCustom('type')}><span className="icon-tile sm"><Plus size={16} /></span><span className="row-text"><b>Add your own type</b><em>With the fields you want to keep</em></span></button>}
           </div>
         </div>
       )}
@@ -114,6 +122,7 @@ export function AssetSheet({ asset, categoryId, onSaved, onClose }: { asset?: As
           <EntityForm<V> key={sub.id} fields={fields} initial={initial} onSubmit={submit} onCancel={onClose} submitLabel={isNew ? 'Add asset' : 'Save'} compact />
         </div>
       )}
+      {custom && <CategorySheet categoryId={custom === 'type' ? category?.id : undefined} onClose={() => setCustom(null)} onSaved={(c, s) => { setCat(c); setSubId(s); }} />}
     </Sheet>
   );
 }

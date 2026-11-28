@@ -212,3 +212,10 @@ export function fyStart(date: string): string {
   const y = d.getMonth() >= 3 ? d.getFullYear() : d.getFullYear() - 1;
   return `${y}-04-01`;
 }
+
+/** "18:30" -> "6:30 PM" */
+export function fmt12(t?: string): string {
+  if (!t) return '';
+  const [h, m] = t.split(':').map(Number);
+  return `${((h + 11) % 12) + 1}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
+}

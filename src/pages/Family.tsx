@@ -14,6 +14,11 @@ import { FormSheet, type FieldSpec } from '../components/ui/EntityForm';
 import { useToast } from '../components/ui/Toast';
 import { useEd } from '../components/editors/Editors';
 import type { Member, Nominee } from '../lib/types';
+import { ItemPicker, type PickItem } from '../components/ui/ItemPicker';
+import { PhoneInput } from '../components/ui/PhoneInput';
+import { PhoneBookButton } from '../components/ui/ContactPick';
+import { COUNTRIES, countryOf, validMobile } from '../data/countries';
+import { RELATIONS } from '../data/masters';
 
 type Tab = 'members' | 'invites' | 'roles' | 'private' | 'nominees';
 
@@ -90,6 +95,7 @@ export function FamilyPage() {
             </button>
           ))}
           {owner && <button className="mrow" onClick={() => setNom('new')}><span className="icon-tile sm"><Plus size={16} /></span><span className="row-text"><b>Add a nominee</b><em>Someone who can view chosen items if needed</em></span></button>}
+          <div className="alert alert-info small" style={{ margin: '8px 16px' }}><b>What is a nominee?</b> Someone you trust (spouse, child, sibling) who can see chosen items if something happens to you. They <b>can sign in</b> to the Mynages app with their own mobile number (OTP) and see <b>only the items you tick — view-only</b>. They can’t edit, delete or see anything else, and they are not counted as a family member in your plan.</div>
           <p className="xs muted pad-x">Advisor access (CA, agent) with expiry — planned (P1).</p>
         </div>
       )}
@@ -100,25 +106,34 @@ export function FamilyPage() {
   );
 }
 
+type Mob = { iso: string; num: string };
+const OTHER = '__other';
 function NomineeSheet({ n, onClose }: { n?: Nominee; onClose: () => void }) {
   const db = useDb();
   const toast = useToast();
-  const items = [
-    ...db.assets.filter((a) => a.space === 'family' && !a.archived).map((a) => ({ value: `asset:${a.id}`, label: a.name })),
-    ...db.coverages.filter((c) => c.linkedType === 'member' && !c.supersededById).map((c) => ({ value: `coverage:${c.id}`, label: `${c.provider} ${c.policyType}` })),
+  const catName = (id: string) => db.categories.find((c) => c.id === id)?.name ?? 'Other';
+  const items: PickItem[] = [
+    ...db.assets.filter((a) => a.space === 'family' && !a.archived).map((a) => ({ value: `asset:${a.id}`, label: a.name, sub: `${catName(a.categoryId)} · ${a.code}`, group: catName(a.categoryId) })),
+    ...db.coverages.filter((c) => c.linkedType === 'member' && !c.supersededById).map((c) => ({ value: `coverage:${c.id}`, label: `${c.provider} ${c.policyType ?? ''}`.trim(), sub: `Policy · ${c.number}`, group: 'Policies' })),
   ];
+  const rels = RELATIONS.filter((r) => r !== 'Self' && r !== 'Other');
+  const isoOf = (dial?: string) => COUNTRIES.find((c) => c.dial === (dial ?? '91'))?.iso ?? 'IN';
   return (
     <FormSheet<Record<string, unknown>> open onClose={onClose} title={n ? `Nominee — ${n.name}` : 'Add a nominee'}
       fields={[
         { key: 'name', label: 'Name', type: 'text', required: true, full: true },
-        { key: 'relationship', label: 'Relationship', type: 'text', required: true },
-        { key: 'mobile', label: 'Mobile', type: 'tel' },
-        { key: 'items', label: 'Can view', type: 'multiselect', required: true, options: items },
+        { key: 'relationship', label: 'Relationship', type: 'select', required: true, options: [...rels.map((r) => ({ value: r, label: r })), ...(n && !rels.includes(n.relationship) ? [{ value: n.relationship, label: n.relationship }] : []), { value: OTHER, label: 'Other' }] },
+        { key: 'relOther', label: 'Relationship (type it)', type: 'text', required: (v) => v.relationship === OTHER, showIf: (v) => v.relationship === OTHER, placeholder: 'e.g. Nephew, Friend' },
+        { key: 'mob', label: 'Mobile (they sign in with this)', type: 'custom', required: true,
+          render: (val, set) => { const m = (val as Mob | undefined) ?? { iso: 'IN', num: '' }; return <PhoneInput iso={m.iso} onIso={(iso) => set({ ...m, iso })} value={m.num} onChange={(num) => set(num ? { ...m, num } : undefined)} />; },
+          validate: (val) => { const m = val as Mob | undefined; return m?.num && !validMobile(countryOf(m.iso), m.num) ? `Enter a valid ${countryOf(m.iso).name} mobile number` : undefined; } },
+        { key: 'items', label: 'Can view', type: 'custom', required: true, hint: 'Only these items are visible to them', render: (val, set) => <ItemPicker title="What can they view?" items={items} value={(val as string[] | undefined) ?? []} onChange={set} /> },
         ...(n ? [{ key: 'access', label: 'Access', type: 'select', required: true, options: [{ value: 'active', label: 'Active' }, { value: 'pending', label: 'Pending' }, { value: 'revoked', label: 'Revoked' }] } as FieldSpec<Record<string, unknown>>] : []),
       ]}
-      initial={n ? { ...n, items: n.items.map((i) => `${i.type}:${i.id}`) } : { items: [] }}
+      initial={n ? { ...n, mob: n.mobile ? { iso: isoOf(n.dial), num: n.mobile } : undefined, items: n.items.map((i) => `${i.type}:${i.id}`) } : { items: [] }}
+      before={(v, set) => <div className="row" style={{ gap: 8, marginBottom: 12 }}><PhoneBookButton label="Fill from phone book" onPick={(p) => { const d = p.phone.replace(/\D/g, ''); const c = COUNTRIES.find((x) => x.iso !== 'IN' && d.startsWith(x.dial) && d.length - x.dial.length >= x.min && d.length - x.dial.length <= x.max); set({ name: String(v.name ?? '').trim() ? v.name : p.name, mob: c ? { iso: c.iso, num: d.slice(c.dial.length) } : { iso: 'IN', num: d.slice(-10) } }); }} /></div>}
       after={() => n ? <button type="button" className="btn btn-danger-outline btn-sm" style={{ marginTop: 12 }} onClick={() => { removeRow('nominees', n.id); toast({ type: 'success', title: 'Nominee removed' }); onClose(); }}><Trash2 size={14} /> Remove nominee</button> : null}
-      onSubmit={(v) => { upsert('nominees', { ...(n ?? { access: 'pending', createdAt: new Date().toISOString() } as Nominee), id: n?.id ?? uid('nm'), name: String(v.name), relationship: String(v.relationship), mobile: (v.mobile as string) || undefined, access: (v.access as Nominee['access']) ?? n?.access ?? 'pending', items: (v.items as string[]).map((x) => { const [type, id] = x.split(':'); return { type: type as 'asset', id }; }) }); toast({ type: 'success', title: n ? 'Nominee updated' : 'Nominee added', message: n ? undefined : 'They’ll get view-only access once they verify by OTP' }); onClose(); }} />
+      onSubmit={(v) => { const mob = v.mob as Mob; upsert('nominees', { ...(n ?? { access: 'pending', createdAt: new Date().toISOString() } as Nominee), id: n?.id ?? uid('nm'), name: String(v.name), relationship: v.relationship === OTHER ? String(v.relOther).trim() : String(v.relationship), mobile: mob.num, dial: countryOf(mob.iso).dial, access: (v.access as Nominee['access']) ?? n?.access ?? 'pending', items: (v.items as string[]).map((x) => { const [type, id] = x.split(':'); return { type: type as 'asset', id }; }) }); toast({ type: 'success', title: n ? 'Nominee updated' : 'Nominee added', message: n ? undefined : `They can sign in with +${countryOf(mob.iso).dial} ${mob.num} (OTP) and see only the chosen items` }); onClose(); }} />
   );
 }
 

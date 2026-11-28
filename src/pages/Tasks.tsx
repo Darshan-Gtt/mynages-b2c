@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Bell, CalendarCheck, CalendarDays, ClipboardList, Edit3, List, Moon, Play, Plus, RotateCcw, Trash2, X } from 'lucide-react';
+import { Bell, Phone, CalendarCheck, CalendarDays, ClipboardList, Edit3, List, Moon, Play, Plus, RotateCcw, Trash2, X } from 'lucide-react';
 import { useActive } from '../lib/hooks';
 import { canEdit } from '../lib/access';
 import { cancelObligation, removeRow, setTaskStatus, snooze } from '../lib/actions';
@@ -80,8 +80,9 @@ export function TasksPage() {
       <span className="icon-tile sm warn"><Bell size={15} /></span>
       <Link to={i.o.assetId ? `/assets/${i.o.assetId}#due` : '#'} className="row-text" style={{ color: 'inherit' }}>
         <b>{i.o.title}</b>
-        <em>{fmtDate(i.o.dueDate)}{i.o.amount ? ` · ${inr(i.o.amount)}` : ''}{i.o.autoRenew ? ' · auto-renews' : ''}{i.o.status === 'completed' ? ` · paid by ${db.members.find((m) => m.id === i.o.completedBy)?.name.split(' ')[0]}` : ''}</em>
+        <em>{fmtDate(i.o.dueDate)}{i.o.dueTime ? ` ${i.o.dueTime}` : ''}{i.o.customType ? ` · ${i.o.customType}` : ''}{i.o.amount ? ` · ${inr(i.o.amount)}` : ''}{i.o.autoRenew ? ' · auto-renews' : ''}{i.o.status === 'completed' ? ` · paid by ${db.members.find((m) => m.id === i.o.completedBy)?.name.split(' ')[0]}` : ''}</em>
       </Link>
+      {i.o.contactId && db.contacts.find((c) => c.id === i.o.contactId) && <a className="icon-btn sm" href={`tel:${db.contacts.find((c) => c.id === i.o.contactId)!.phone}`} aria-label={`Call ${db.contacts.find((c) => c.id === i.o.contactId)!.name}`}><Phone size={15} /></a>}
       <ObBadge o={i.o} />
       {canEdit(me, i.o) && <MenuBtn onClick={() => setSheet({ title: i.o.title, actions: obActions(i.o) })} />}
     </div>
@@ -104,11 +105,12 @@ export function TasksPage() {
           render={(its, d) => <><p className="xs muted" style={{ margin: '8px 0' }}>{fmtDate(d)}</p>{its.length ? its.map((x) => { const it = items.find((i) => (i.kind === 'task' ? i.t.id : i.o.id) === x.id)!; return row(it); }) : <p className="small muted">Nothing on this day.</p>}<p className="xs muted" style={{ marginTop: 8 }}>Calendar view (P1 preview) · sync to Google Calendar — planned</p></>} />
       ) : filtered.length === 0 ? (
         <Empty icon={tab === 'subscriptions' ? <Bell size={20} /> : <ClipboardList size={20} />} title={tab === 'overdue' ? 'Nothing overdue 🎉' : tab === 'subscriptions' ? 'No subscriptions' : 'Nothing here'}>
+          {tab === 'subscriptions' && <p className="xs muted" style={{ marginBottom: 8 }}>Add a reminder with type “Subscription renewal” (Netflix, Hotstar, Spotify…) to see the monthly total here.</p>}
           {tab !== 'completed' && <div className="row"><button className="btn btn-sm btn-primary" onClick={() => open({ kind: 'task' })}><Plus size={14} /> Task</button><button className="btn btn-sm" onClick={() => open({ kind: 'obligation' })}><Plus size={14} /> Reminder</button></div>}
         </Empty>
       ) : (
         <div className="list">
-          {tab === 'subscriptions' && <p className="xs muted pad-x">Monthly total: <b>{inr(filtered.reduce((s, i) => s + (i.kind === 'ob' && i.o.recurrence === 'monthly' ? i.o.amount ?? 0 : i.kind === 'ob' && i.o.recurrence === 'yearly' ? (i.o.amount ?? 0) / 12 : 0), 0))}</b> · tip: set a task to cancel before auto-renew</p>}
+          {tab === 'subscriptions' && <p className="xs muted pad-x">Reminders of type “Subscription renewal” — Netflix, Hotstar, Spotify, cloud storage, apps. Monthly total: <b>{inr(filtered.reduce((s, i) => s + (i.kind === 'ob' && i.o.recurrence === 'monthly' ? i.o.amount ?? 0 : i.kind === 'ob' && i.o.recurrence === 'yearly' ? (i.o.amount ?? 0) / 12 : 0), 0))}</b> · tip: set a task to cancel before auto-renew</p>}
           {filtered.map(row)}
         </div>
       )}

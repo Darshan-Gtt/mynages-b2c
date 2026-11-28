@@ -6,16 +6,19 @@ import {
 import { getDb, setDb, useDb } from '../lib/store';
 import { signOut, useMe } from '../lib/session';
 import { entitlement, isOwner } from '../lib/access';
-import { ActionError, changePlan, payNow, saveAsset, saveMember, setSubStatus, upsert } from '../lib/actions';
-import { CURRENCIES, countryOf } from '../data/countries';
-import { addDays, cx, download, fmtDate, fmtDateTime, inr, phoneOf, planPrice, parseCsv, timeAgo, toCsv, today, uid } from '../lib/utils';
+import { ActionError, changeMobile, changePlan, payNow, saveAsset, saveMember, setSubStatus, upsert } from '../lib/actions';
+import { COUNTRIES, CURRENCIES, countryOf, validMobile } from '../data/countries';
+import { PhoneInput } from '../components/ui/PhoneInput';
+import { DEMO_OTP, addDays, cx, download, fmt12, fmtDate, fmtDateTime, inr, phoneOf, planPrice, parseCsv, timeAgo, toCsv, today, uid } from '../lib/utils';
 import { MODULE_LABELS, PLANS, planOf, COLORS } from '../data/masters';
 import { TopBar } from '../components/common';
 import { Badge, Empty, KV, Pills, Segmented } from '../components/ui/Misc';
 import { Confirm, Sheet } from '../components/ui/Modal';
 import { FormSheet } from '../components/ui/EntityForm';
-import { Field, FileDrop, Input, Switch, Textarea, type PickedFile } from '../components/ui/Form';
+import { Field, FileDrop, Input, OtpInput, Select, Switch, SwitchRow, Textarea, type PickedFile } from '../components/ui/Form';
 import { useToast } from '../components/ui/Toast';
+import { CategorySheet } from '../components/editors/CategorySheet';
+import { DocFieldSheet, docCatKey, docFieldsOf, fieldTypeLabel, removeDocField } from '../components/editors/DocFields';
 import type { Settings } from '../lib/types';
 
 const setSettings = (p: Partial<Settings>) => setDb((d) => ({ ...d, settings: { ...d.settings, ...p } }));
@@ -53,7 +56,7 @@ export function SettingsPage() {
         })}
         <button className="mrow danger" onClick={() => signOut()}><span className="icon-tile sm danger"><LogOut size={18} /></span><span className="row-text"><b>Sign out</b></span></button>
       </div>
-      <p className="xs muted center pad">Mynages family app · prototype v0.3</p>
+      <p className="xs muted center pad">Mynages family app · v0.3</p>
     </div>
   );
 }
@@ -78,10 +81,12 @@ function Profile() {
   const toast = useToast();
   const [edit, setEdit] = useState(false);
   const [fam, setFam] = useState(false);
+  const [mob, setMob] = useState(false);
   return (
     <div className="stack pad">
+      {mob && <ChangeMobile onClose={() => setMob(false)} />}
       <div className="card pad"><KV rows={[['Name', me.name], ['Mobile', me.mobile ? phoneOf(me) : '—'], ['Email', me.email], ['Born', me.dob && fmtDate(me.dob)], ['Role', me.role === 'owner' ? 'Owner' : me.role === 'adult' ? 'Adult member' : 'View-only']]} />
-        <button className="btn btn-sm" style={{ marginTop: 10 }} onClick={() => setEdit(true)}>Edit profile</button></div>
+        <div className="row" style={{ gap: 8, marginTop: 10 }}><button className="btn btn-sm" onClick={() => setEdit(true)}>Edit profile</button><button className="btn btn-sm" onClick={() => setMob(true)}><Smartphone size={14} /> Change mobile</button></div></div>
       <b className="small">Workspaces</b>
       <div className="list" style={{ margin: '0 -16px' }}>
         <div className="mrow"><span className="icon-tile sm"><User size={16} /></span><span className="row-text"><b>{db.settings.familyName}</b><em>Family workspace · {db.members.filter((m) => m.state === 'joined' || m.state === 'self').length} joined</em></span>{isOwner(me) && <button className="btn btn-xs" onClick={() => setFam(true)}>Rename</button>}</div>
@@ -89,10 +94,65 @@ function Profile() {
       </div>
       <p className="xs muted">One person belongs to one family workspace in this version (PRD §4.2).</p>
       {edit && <FormSheet<Record<string, unknown>> open onClose={() => setEdit(false)} title="Edit profile"
-        fields={[{ key: 'name', label: 'Full name', type: 'text', required: true, full: true }, { key: 'email', label: 'Email', type: 'email' }, { key: 'dob', label: 'Date of birth', type: 'date' }, { key: 'mobile', label: 'Mobile', type: 'tel', disabled: true, hint: 'Change via OTP — planned' }]}
+        fields={[{ key: 'name', label: 'Full name', type: 'text', required: true, full: true }, { key: 'email', label: 'Email', type: 'email' }, { key: 'dob', label: 'Date of birth', type: 'date' }, { key: 'mobile', label: 'Mobile', type: 'tel', disabled: true, hint: 'Use “Change mobile” — the new number is verified by OTP' }]}
         initial={{ ...me }} onSubmit={(v) => { saveMember({ ...me, name: String(v.name), email: (v.email as string) || undefined, dob: (v.dob as string) || undefined }); toast({ type: 'success', title: 'Profile saved' }); setEdit(false); }} />}
       {fam && <FormSheet<Record<string, unknown>> open onClose={() => setFam(false)} title="Family name" fields={[{ key: 'familyName', label: 'Family name', type: 'text', required: true, full: true }]} initial={{ familyName: db.settings.familyName }} onSubmit={(v) => { setSettings({ familyName: String(v.familyName) }); toast({ type: 'success', title: 'Renamed' }); setFam(false); }} />}
     </div>
+  );
+}
+
+/** Change the signed-in person's mobile: new number → OTP → saved everywhere it is used. */
+function ChangeMobile({ onClose }: { onClose: () => void }) {
+  const db = useDb();
+  const me = useMe()!;
+  const toast = useToast();
+  const [step, setStep] = useState<'number' | 'otp'>('number');
+  const [iso, setIso] = useState(() => COUNTRIES.find((c) => c.dial === (me.dial ?? '91'))?.iso ?? db.settings.country ?? 'IN');
+  const [mobile, setMobile] = useState('');
+  const [otp, setOtp] = useState('');
+  const [err, setErr] = useState<string>();
+  const c = countryOf(iso);
+  const send = () => {
+    if (!validMobile(c, mobile)) { setErr(c.min === c.max ? `Enter a valid ${c.min}-digit mobile number` : `Enter ${c.min}–${c.max} digits`); return; }
+    if (mobile === me.mobile && c.dial === (me.dial ?? '91')) { setErr('This is already your number'); return; }
+    const clash = db.members.find((m) => m.id !== me.id && m.mobile === mobile && (m.dial ?? '91') === c.dial && m.state !== 'removed');
+    if (clash) { setErr(`This number is already used by ${clash.name.split(' ')[0]} in your family`); return; }
+    setErr(undefined); setOtp(''); setStep('otp');
+    toast({ type: 'info', title: `OTP sent to +${c.dial} ${mobile.slice(0, 2)}••••••${mobile.slice(-2)}`, message: `Use ${DEMO_OTP} to verify` });
+  };
+  const verify = () => {
+    if (otp !== DEMO_OTP) { setErr('Wrong OTP. Please check and try again.'); return; }
+    try { changeMobile(me.id, c.dial, mobile); } catch (e) { setErr(e instanceof Error ? e.message : 'Could not change the number'); return; }
+    toast({ type: 'success', title: 'Mobile number changed', message: `Sign in with +${c.dial} ${mobile} from now on` });
+    onClose();
+  };
+  return (
+    <Sheet open onClose={onClose} title="Change mobile number" subtitle={me.mobile ? `Current: ${phoneOf(me)}` : undefined}>
+      {step === 'number' ? (
+        <div className="stack">
+          <Field label="New mobile number" error={err}><PhoneInput autoFocus iso={iso} onIso={(x) => { setIso(x); setMobile(''); setErr(undefined); }} value={mobile} onChange={(v) => { setMobile(v); setErr(undefined); }} invalid={!!err} /></Field>
+          <div className="alert alert-info small" style={{ display: 'block' }}>
+            <b>This updates:</b>
+            <ul className="impact-list">
+              <li>Sign-in — your next OTP goes to the new number; the old one stops working</li>
+              <li>WhatsApp &amp; SMS reminders and task alerts</li>
+              <li>Your card in Family members (everyone sees the new number)</li>
+              <li>Family invites you send</li>
+            </ul>
+            <span className="xs muted">Your assets, documents, reminders and tasks stay as they are.</span>
+          </div>
+          <button className="btn btn-primary btn-block" onClick={send}>Send OTP</button>
+        </div>
+      ) : (
+        <div className="stack">
+          <p className="small">Enter the 6-digit code sent to <b>+{c.dial} {mobile}</b></p>
+          <OtpInput autoFocus value={otp} onChange={(v) => { setOtp(v); setErr(undefined); }} error={!!err} />
+          {err && <span className="field-error" role="alert">{err}</span>}
+          <button className="btn btn-primary btn-block" disabled={otp.length !== 6} onClick={verify}>Verify &amp; change</button>
+          <button className="link-btn small" onClick={() => { setStep('number'); setErr(undefined); }}>Change the number</button>
+        </div>
+      )}
+    </Sheet>
   );
 }
 
@@ -104,13 +164,13 @@ function Preferences() {
   return (
     <div className="stack pad">
       <Field label="Language" htmlFor="lang">
-        <select id="lang" className="select" value={st.language} onChange={(e) => { setSettings({ language: e.target.value }); if (e.target.value !== 'English') toast({ type: 'info', title: `${e.target.value} — coming soon`, message: 'The prototype shows English text' }); }}>
+        <Select id="lang" aria-label="Language" value={st.language} onChange={(e) => { setSettings({ language: e.target.value }); if (e.target.value !== 'English') toast({ type: 'info', title: `${e.target.value} — coming soon`, message: 'The prototype shows English text' }); }}>
           {['English', 'मराठी (Marathi)', 'हिन्दी (Hindi)'].map((l) => <option key={l}>{l}</option>)}
-        </select>
+        </Select>
       </Field>
       <div><span className="small" style={{ display: 'block', marginBottom: 6, fontWeight: 600 }}>Theme</span><Segmented label="Theme" value={st.theme} onChange={(t) => setSettings({ theme: t })} options={[{ value: 'light', label: 'Light' }, { value: 'dark', label: 'Dark' }, { value: 'auto', label: 'Follow phone' }]} /></div>
-      <Field label="Date format" htmlFor="df"><select id="df" className="select" value={st.dateFormat} onChange={(e) => setSettings({ dateFormat: e.target.value })}>{['DD MMM YYYY', 'DD/MM/YYYY', 'YYYY-MM-DD'].map((f) => <option key={f}>{f}</option>)}</select></Field>
-      <Field label="Currency" htmlFor="cur" hint="Asset values, costs and reports are shown in this currency"><select id="cur" className="select" value={st.currency} onChange={(e) => { setSettings({ currency: e.target.value }); toast({ type: 'success', title: `Currency set to ${e.target.value}` }); }}>{CURRENCIES.map((c) => <option key={c.code} value={c.code}>{c.code} · {c.name}</option>)}</select></Field>
+      <Field label="Date format" htmlFor="df"><Select id="df" aria-label="Date format" value={st.dateFormat} onChange={(e) => setSettings({ dateFormat: e.target.value })}>{['DD MMM YYYY', 'DD/MM/YYYY', 'YYYY-MM-DD'].map((f) => <option key={f}>{f}</option>)}</Select></Field>
+      <Field label="Currency" htmlFor="cur" hint="Asset values, costs and reports are shown in this currency"><Select id="cur" aria-label="Currency" value={st.currency} onChange={(e) => { setSettings({ currency: e.target.value }); toast({ type: 'success', title: `Currency set to ${e.target.value}` }); }}>{CURRENCIES.map((c) => <option key={c.code} value={c.code}>{c.code} · {c.name}</option>)}</Select></Field>
       <KV rows={[['Country', countryOf(st.country).name], ['Time zone', st.timeZone]]} />
     </div>
   );
@@ -127,7 +187,7 @@ function Security() {
   ]);
   return (
     <div className="stack pad">
-      <Switch checked={lock} onChange={(v) => { setLock(v); toast({ type: 'success', title: v ? 'App lock on' : 'App lock off' }); }} label="App lock (fingerprint / face / PIN)" />
+      <SwitchRow checked={lock} onChange={(v) => { setLock(v); toast({ type: 'success', title: v ? 'App lock on' : 'App lock off' }); }} label="App lock" desc="Ask for fingerprint, face or PIN when the app opens" />
       <p className="xs muted">Sign-in is by mobile OTP or Google — there is no password to manage.</p>
       <b className="small">Signed-in devices</b>
       <div className="list" style={{ margin: '0 -16px' }}>
@@ -141,6 +201,7 @@ function Security() {
 }
 
 // ---------------------------------------------------------------- notifications
+const presetLabel = (v: Record<string, unknown>) => (v.unit === 'h' ? (v.hours ? `${v.hours} hour${Number(v.hours) > 1 ? 's' : ''} before` : '') : v.days && v.time ? `${v.days} day${Number(v.days) > 1 ? 's' : ''} before, ${fmt12(String(v.time))}` : '');
 function Notifications() {
   const db = useDb();
   const toast = useToast();
@@ -162,7 +223,7 @@ function Notifications() {
         ))}
       </div>
       <p className="xs muted">Email reminders are on Family Plus. WhatsApp uses approved templates.</p>
-      <Switch checked={st.quietHours} onChange={(v) => setSettings({ quietHours: v })} label="Quiet hours (10 PM – 7 AM) — hold non-urgent alerts" />
+      <SwitchRow checked={st.quietHours} onChange={(v) => setSettings({ quietHours: v })} label="Quiet hours" desc="10 PM – 7 AM: non-urgent alerts wait till morning" />
       <div className="row between"><b className="small">Reminder presets</b>{isOwner(getDb().members.find((m) => m.id === st.ownerId) ?? null) && <button className="btn btn-xs" onClick={() => setPreset(true)}><Plus size={12} /> Custom</button>}</div>
       <div className="list" style={{ margin: '0 -16px' }}>
         {db.presets.map((p) => (
@@ -170,8 +231,15 @@ function Notifications() {
         ))}
       </div>
       {preset && <FormSheet<Record<string, unknown>> open onClose={() => setPreset(false)} title="Custom reminder"
-        fields={[{ key: 'n', label: 'How many', type: 'number', required: true, min: 1 }, { key: 'unit', label: 'Unit', type: 'select', required: true, options: [{ value: 'h', label: 'Hours before' }, { value: 'd', label: 'Days before, 9 AM' }] }]}
-        initial={{ unit: 'd' }} onSubmit={(v) => { const n = Number(v.n); const mins = v.unit === 'h' ? n * 60 : n * 1440; if (getDb().presets.some((p) => p.minutesBefore === mins)) throw new ActionError('That preset already exists'); setDb((d) => ({ ...d, presets: [...d.presets, { id: `rp_c${uid('')}`, label: v.unit === 'h' ? `${n} hours before` : `${n} days before, 9 AM`, minutesBefore: mins }].sort((a, b) => a.minutesBefore - b.minutesBefore) })); toast({ type: 'success', title: 'Preset added' }); setPreset(false); }} />}
+        fields={[
+          { key: 'unit', label: 'Remind', type: 'select', required: true, full: true, options: [{ value: 'h', label: 'Hours before the due time' }, { value: 'd', label: 'Days before, at a time I choose' }] },
+          { key: 'hours', label: 'How many hours before', type: 'select', required: (v) => v.unit === 'h', showIf: (v) => v.unit === 'h', options: Array.from({ length: 23 }, (_, i) => ({ value: String(i + 1), label: `${i + 1} hour${i ? 's' : ''} before` })) },
+          { key: 'days', label: 'How many days before', type: 'number', min: 1, required: (v) => v.unit === 'd', showIf: (v) => v.unit === 'd', placeholder: 'e.g. 2', validate: (x) => (Number(x) > 365 ? 'At most 365 days' : undefined) },
+          { key: 'time', label: 'At what time', type: 'time', required: (v) => v.unit === 'd', showIf: (v) => v.unit === 'd', hint: 'Pick hour, minutes and AM / PM' },
+        ]}
+        initial={{ unit: 'd', time: '09:00' }}
+        after={(v) => { const l = presetLabel(v); return l ? <p className="small" style={{ marginTop: 10 }}>🔔 Preview: <b>{l}</b></p> : null; }}
+        onSubmit={(v) => { const mins = v.unit === 'h' ? Number(v.hours) * 60 : Number(v.days) * 1440; const at = v.unit === 'd' ? String(v.time) : undefined; if (getDb().presets.some((p) => p.minutesBefore === mins && (v.unit === 'h' ? !p.atTime && mins % 1440 !== 0 : (p.atTime ?? '09:00') === at))) throw new ActionError('That reminder already exists'); setDb((d) => ({ ...d, presets: [...d.presets, { id: `rp_c${uid('')}`, label: presetLabel(v)!, minutesBefore: mins, atTime: at }].sort((a, b) => a.minutesBefore - b.minutesBefore) })); toast({ type: 'success', title: 'Reminder option added', message: 'Choose it under “Remind me” on any reminder or task' }); setPreset(false); }} />}
     </div>
   );
 }
@@ -184,35 +252,40 @@ function Categories() {
   const [open, setOpen] = useState<string | null>(null);
   const [addSub, setAddSub] = useState<string | null>(null);
   const [addField, setAddField] = useState<string | null>(null);
+  const [newCat, setNewCat] = useState<null | { categoryId?: string }>(null);
   const owner = isOwner(me);
+  const delField = (sid: string, fid: string) => setDb((d) => ({ ...d, subcategories: d.subcategories.map((s) => (s.id === sid ? { ...s, fields: s.fields.filter((f) => f.id !== fid) } : s)) }));
   return (
     <div>
       <OwnerNote />
+      {owner && <div className="pad-x" style={{ marginBottom: 8 }}><button className="btn btn-primary btn-sm" onClick={() => setNewCat({})}><Plus size={14} /> Create your own category</button><p className="xs muted" style={{ marginTop: 6 }}>Add a category (e.g. Pets, Books) with its own types and fields. Tap a category to add types or fields.</p></div>}
       <div className="list">
         {db.categories.sort((a, b) => a.sort - b.sort).map((c) => (
           <div key={c.id}>
-            <button className="mrow" onClick={() => setOpen(open === c.id ? null : c.id)}><span className="row-text"><b>{c.name}</b><em>{db.subcategories.filter((s) => s.categoryId === c.id).length} types · {db.assets.filter((a) => a.categoryId === c.id).length} assets</em></span><ChevronRight size={16} className="muted" style={{ transform: open === c.id ? 'rotate(90deg)' : undefined }} /></button>
+            <button className="mrow" onClick={() => setOpen(open === c.id ? null : c.id)}><span className="row-text"><b>{c.name}{c.custom && <Badge tone="brand">Custom</Badge>}</b><em>{db.subcategories.filter((s) => s.categoryId === c.id).length} types · {db.assets.filter((a) => a.categoryId === c.id).length} assets</em></span><ChevronRight size={16} className="muted" style={{ transform: open === c.id ? 'rotate(90deg)' : undefined }} /></button>
             {open === c.id && (
               <div className="sub-list">
                 {db.subcategories.filter((s) => s.categoryId === c.id).map((s) => (
                   <div key={s.id} className="card pad" style={{ marginBottom: 8 }}>
                     <div className="row between"><b className="small">{s.name}{s.custom && <Badge tone="brand">Custom</Badge>}</b><span className="xs muted">{s.valuation === 'depreciation' ? `Depreciates ${s.depRate}%/yr` : s.valuation === 'manual' ? 'Manual value' : 'No value'}</span></div>
-                    <div className="chips" style={{ marginTop: 6 }}>{s.fields.map((f) => <span key={f.id} className="chip-static">{f.label}{f.required ? ' *' : ''}</span>)}</div>
+                    <div className="chips" style={{ marginTop: 6 }}>{s.fields.map((f) => <span key={f.id} className="chip-static">{f.label}{f.required ? ' *' : ''}{owner && s.custom && <button className="chip-x" aria-label={`Remove ${f.label}`} onClick={() => { delField(s.id, f.id); toast({ type: 'success', title: `${f.label} removed`, message: 'Values already saved on assets are kept' }); }}><X size={11} /></button>}</span>)}{!s.fields.length && <span className="xs muted">No extra fields yet</span>}</div>
                     {owner && <button className="btn btn-xs" style={{ marginTop: 8 }} onClick={() => setAddField(s.id)}><Plus size={12} /> Field</button>}
                   </div>
                 ))}
-                {owner && <button className="btn btn-sm" onClick={() => setAddSub(c.id)}><Plus size={14} /> Add a type to {c.name}</button>}
+                {owner && <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}><button className="btn btn-sm" onClick={() => setNewCat({ categoryId: c.id })}><Plus size={14} /> Add a type to {c.name}</button>
+                  {c.custom && <button className="btn btn-sm btn-danger-outline" onClick={() => { const n = db.assets.filter((a) => a.categoryId === c.id).length; if (n) { toast({ type: 'error', title: 'In use', message: `${n} asset${n > 1 ? 's' : ''} use this category — move or delete them first` }); return; } setDb((d) => ({ ...d, categories: d.categories.filter((x) => x.id !== c.id), subcategories: d.subcategories.filter((x) => x.categoryId !== c.id) })); toast({ type: 'success', title: `${c.name} deleted` }); }}><Trash2 size={14} /> Delete category</button>}</div>}
               </div>
             )}
           </div>
         ))}
       </div>
+      {newCat && <CategorySheet categoryId={newCat.categoryId} onClose={() => setNewCat(null)} onSaved={(cid) => setOpen(cid)} />}
       {addSub && <FormSheet<Record<string, unknown>> open onClose={() => setAddSub(null)} title="New asset type"
         fields={[{ key: 'name', label: 'Name', type: 'text', required: true, full: true, placeholder: 'e.g. Electric scooter', validate: (x) => (getDb().subcategories.some((s) => s.categoryId === addSub && s.name.toLowerCase() === String(x).trim().toLowerCase()) ? 'Already exists in this category' : undefined) }, { key: 'valuation', label: 'Value', type: 'select', required: true, options: [{ value: 'manual', label: 'I enter the value' }, { value: 'depreciation', label: 'Depreciates yearly' }, { value: 'none', label: 'Not tracked' }] }, { key: 'depRate', label: 'Depreciation % per year', type: 'number', min: 1, showIf: (v) => v.valuation === 'depreciation', required: (v) => v.valuation === 'depreciation' }]}
         initial={{ valuation: 'manual' }} onSubmit={(v) => { setDb((d) => ({ ...d, subcategories: [...d.subcategories, { id: uid('s'), categoryId: addSub, name: String(v.name).trim(), fields: [], valuation: v.valuation as 'manual', depRate: v.depRate ? Number(v.depRate) : undefined, custom: true }] })); toast({ type: 'success', title: 'Type added', message: 'Now add its fields' }); setAddSub(null); }} />}
       {addField && <FormSheet<Record<string, unknown>> open onClose={() => setAddField(null)} title="New field"
         fields={[{ key: 'label', label: 'Label', type: 'text', required: true, full: true }, { key: 'type', label: 'Type', type: 'select', required: true, options: ['text', 'number', 'currency', 'date', 'select', 'boolean', 'textarea'].map((t) => ({ value: t, label: t })) }, { key: 'options', label: 'Options (comma separated)', type: 'text', full: true, showIf: (v) => v.type === 'select', required: (v) => v.type === 'select' }, { key: 'required', label: 'Required', type: 'checkbox', hint: 'Required when adding an asset' }]}
-        initial={{ type: 'text' }} onSubmit={(v) => { const key = String(v.label).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''); setDb((d) => ({ ...d, subcategories: d.subcategories.map((s) => (s.id === addField ? { ...s, fields: s.fields.some((f) => f.key === key) ? (() => { throw new ActionError('A field with this name exists'); })() : [...s.fields, { id: uid('f'), key, label: String(v.label), type: v.type as 'text', required: !!v.required, options: v.options ? String(v.options).split(',').map((x) => x.trim()).filter(Boolean) : undefined }] } : s)) })); toast({ type: 'success', title: 'Field added', message: 'Existing assets keep working — the new field is blank' }); setAddField(null); }} />}
+        initial={{ type: 'text' }} onSubmit={(v) => { const key = String(v.label).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''); if (getDb().subcategories.find((s) => s.id === addField)?.fields.some((f) => f.key === key)) throw new ActionError('A field with this name exists'); setDb((d) => ({ ...d, subcategories: d.subcategories.map((s) => (s.id === addField ? { ...s, fields: s.fields.some((f) => f.key === key) ? (() => { throw new ActionError('A field with this name exists'); })() : [...s.fields, { id: uid('f'), key, label: String(v.label), type: v.type as 'text', required: !!v.required, options: v.options ? String(v.options).split(',').map((x) => x.trim()).filter(Boolean) : undefined }] } : s)) })); toast({ type: 'success', title: 'Field added', message: 'Existing assets keep working — the new field is blank' }); setAddField(null); }} />}
     </div>
   );
 }
@@ -223,18 +296,53 @@ function DocCategories() {
   const toast = useToast();
   const [tab, setTab] = useState<'person' | 'asset'>('person');
   const [val, setVal] = useState('');
+  const [open, setOpen] = useState<string | null>(null);
+  const [addField, setAddField] = useState<string | null>(null);
+  const owner = isOwner(me);
   const list = db.settings.docCategories[tab];
-  const used = (c: string) => db.docs.filter((d) => d.category === c).length;
+  const used = (c: string) => db.docs.filter((d) => d.category === c && (d.ownerType === 'member' ? 'person' : 'asset') === tab).length;
   return (
     <div>
       <OwnerNote />
-      <Pills value={tab} onChange={setTab} items={[{ id: 'person', label: 'Person documents' }, { id: 'asset', label: 'Asset documents' }]} />
+      <Pills value={tab} onChange={(t) => { setTab(t); setOpen(null); }} items={[{ id: 'person', label: 'Person documents' }, { id: 'asset', label: 'Asset documents' }]} />
+      <p className="xs muted pad-x" style={{ margin: '4px 0 8px' }}>Tap a category to see or add its own fields (e.g. “Policy no.” for Insurance, “Blood group” for Medical). Every document already has title, number, issued by, dates, tags and notes.</p>
       <div className="list">
-        {list.map((c) => <div key={c} className="mrow"><span className="row-text"><b>{c}</b><em>{used(c)} documents</em></span>{isOwner(me) && <button className="icon-btn sm" aria-label={`Remove ${c}`} onClick={() => { if (used(c)) { toast({ type: 'error', title: 'In use', message: `Move its ${used(c)} documents first` }); return; } setSettings({ docCategories: { ...db.settings.docCategories, [tab]: list.filter((x) => x !== c) } }); }}><Trash2 size={14} /></button>}</div>)}
+        {list.map((c) => {
+          const fs = docFieldsOf(db, tab, c);
+          return (
+            <div key={c}>
+              <button className="mrow" onClick={() => setOpen(open === c ? null : c)}>
+                <span className="row-text"><b>{c}</b><em>{used(c)} documents · {fs.length ? `${fs.length} own field${fs.length > 1 ? 's' : ''}` : 'no extra fields'}</em></span>
+                <ChevronRight size={16} className="muted" style={{ transform: open === c ? 'rotate(90deg)' : undefined }} />
+              </button>
+              {open === c && (
+                <div className="sub-list">
+                  <div className="card pad" style={{ marginBottom: 8 }}>
+                    <b className="small">Fields</b>
+                    <div className="stack-sm" style={{ marginTop: 6 }}>
+                      {fs.map((f) => (
+                        <div key={f.id} className="row between small">
+                          <span>{f.label}{f.required && <span className="req"> *</span>} <span className="xs muted">· {fieldTypeLabel(f.type)}{f.options ? `: ${f.options.join(', ')}` : ''}</span></span>
+                          {owner && <button className="icon-btn sm" aria-label={`Remove ${f.label}`} onClick={() => { removeDocField(tab, c, f.id); toast({ type: 'success', title: `${f.label} removed`, message: 'Values already saved on documents are kept' }); }}><X size={14} /></button>}
+                        </div>
+                      ))}
+                      {!fs.length && <span className="xs muted">No extra fields yet.</span>}
+                    </div>
+                    {owner && <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                      <button className="btn btn-xs btn-primary" onClick={() => setAddField(c)}><Plus size={12} /> Add field</button>
+                      <button className="btn btn-xs btn-danger-outline" onClick={() => { if (used(c)) { toast({ type: 'error', title: 'In use', message: `Move its ${used(c)} documents first` }); return; } setDb((d) => { const df = { ...d.settings.docFields }; delete df[docCatKey(tab, c)]; return { ...d, settings: { ...d.settings, docCategories: { ...d.settings.docCategories, [tab]: d.settings.docCategories[tab].filter((x) => x !== c) }, docFields: df } }; }); setOpen(null); toast({ type: 'success', title: `${c} removed` }); }}><Trash2 size={12} /> Delete category</button>
+                    </div>}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
-      {isOwner(me) && <form className="row pad" style={{ gap: 8 }} onSubmit={(e) => { e.preventDefault(); const v = val.trim(); if (!v) return; if (list.some((x) => x.toLowerCase() === v.toLowerCase())) { toast({ type: 'error', title: 'Already exists' }); return; } setSettings({ docCategories: { ...db.settings.docCategories, [tab]: [...list, v] } }); setVal(''); toast({ type: 'success', title: 'Category added' }); }}>
-        <Input value={val} onChange={(e) => setVal(e.target.value)} placeholder="New category" aria-label="New category" /><button className="btn btn-primary btn-sm" type="submit"><Plus size={14} /> Add</button>
+      {owner && <form className="row pad" style={{ gap: 8 }} onSubmit={(e) => { e.preventDefault(); const v = val.trim(); if (v.length < 2 || !/\p{L}/u.test(v)) { toast({ type: 'error', title: 'Enter a category name', message: 'At least 2 characters, with letters' }); return; } if (list.some((x) => x.toLowerCase() === v.toLowerCase())) { toast({ type: 'error', title: 'Already exists' }); return; } setSettings({ docCategories: { ...db.settings.docCategories, [tab]: [...list, v] } }); setVal(''); setOpen(v); toast({ type: 'success', title: 'Category added', message: 'Now add its fields' }); }}>
+        <Input value={val} maxLength={40} onChange={(e) => setVal(e.target.value)} placeholder="New category" aria-label="New category" /><button className="btn btn-primary btn-sm" type="submit"><Plus size={14} /> Add</button>
       </form>}
+      {addField && <DocFieldSheet kind={tab} name={addField} onClose={() => setAddField(null)} />}
     </div>
   );
 }
@@ -391,9 +499,10 @@ function Privacy() {
   return (
     <div className="stack pad">
       <b className="small">Consent</b>
-      <Switch checked={c.analytics} onChange={(v) => setSettings({ consent: { ...c, analytics: v } })} label="Anonymous usage analytics" />
-      <Switch checked={c.whatsapp} onChange={(v) => setSettings({ consent: { ...c, whatsapp: v } })} label="Reminders on WhatsApp" />
-      <Switch checked={c.marketing} onChange={(v) => setSettings({ consent: { ...c, marketing: v } })} label="Product news & offers" />
+      <p className="xs muted" style={{ marginTop: -6 }}>You choose what Mynages may do with your data. Change these anytime — the app works the same either way.</p>
+      <SwitchRow checked={c.analytics} onChange={(v) => setSettings({ consent: { ...c, analytics: v } })} label="Anonymous usage analytics" desc="Share which screens are used and app errors (no names, numbers or documents) so we can improve the app" />
+      <SwitchRow checked={c.whatsapp} onChange={(v) => setSettings({ consent: { ...c, whatsapp: v } })} label="Reminders on WhatsApp" desc="Allow us to send due-date reminders and family invites to your WhatsApp number. Off = only in-app / push" />
+      <SwitchRow checked={c.marketing} onChange={(v) => setSettings({ consent: { ...c, marketing: v } })} label="Product news & offers" desc="Occasional messages about new features and plan offers. Never shared with other companies" />
       <b className="small" style={{ marginTop: 8 }}>Activity log</b>
       <div className="list" style={{ margin: '0 -16px' }}>
         {log.map((e) => <div key={e.id} className="mrow"><span className="row-text"><b>{e.text}</b><em>{db.members.find((m) => m.id === e.by)?.name.split(' ')[0] ?? 'System'} · {fmtDateTime(e.at)}{e.assetId ? ` · ${db.assets.find((a) => a.id === e.assetId)?.name ?? ''}` : ''}</em></span></div>)}
@@ -433,7 +542,7 @@ function Help() {
       ))}
       <b className="small" style={{ marginTop: 8 }}><MessageSquare size={14} style={{ display: 'inline', verticalAlign: -2 }} /> Send feedback</b>
       <Segmented label="Type" value={type} onChange={setType} options={['Idea', 'Problem', 'Question'].map((t) => ({ value: t, label: t }))} />
-      <Field label="Message" htmlFor="fb" error={err}><Textarea id="fb" value={text} invalid={!!err} onChange={(e) => { setText(e.target.value); setErr(''); }} placeholder="Tell us what would make Mynages better" /></Field>
+      <Field label="Message" htmlFor="fb" error={err}><Textarea id="fb" maxLength={1000} value={text} invalid={!!err} onChange={(e) => { setText(e.target.value); setErr(''); }} placeholder="Tell us what would make Mynages better" /></Field>
       <button className="btn btn-primary btn-sm" onClick={() => { if (text.trim().length < 10) { setErr('Please write at least 10 characters'); return; } upsert('feedback', { id: uid('fb'), type, subject: text.slice(0, 40), text, at: new Date().toISOString(), by: me.id }); setText(''); toast({ type: 'success', title: 'Thanks! Feedback sent', message: 'We reply within 2 working days' }); }}>Send</button>
       <div className="row" style={{ gap: 8 }}><a className="btn btn-sm" href="https://wa.me/919000000000" target="_blank" rel="noreferrer">WhatsApp support</a><a className="btn btn-sm" href="mailto:support@mynages.example">Email support</a></div>
     </div>

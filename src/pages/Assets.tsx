@@ -54,8 +54,9 @@ export function AssetsPage() {
       <div className="row between pad-x" style={{ margin: '10px 0' }}>
         <span className="xs muted">{rows.length} items · {inr(total, { compact: true })}</span>
         <div className="row" style={{ gap: 6 }}>
-          <Select value={sort} onChange={(e) => setSort(e.target.value as Sort)} aria-label="Sort" style={{ height: 32, width: 'auto', fontSize: '0.78rem' }}>
-            <option value="name">Name</option><option value="newest">Newest</option><option value="value">Value</option><option value="due">Next due</option>
+          <Select value={sort} onChange={(e) => setSort(e.target.value as Sort)} aria-label="Sort by" style={{ height: 32, width: 'auto', fontSize: '0.78rem' }}
+            display={<span className="ellipsis">Sort: {({ name: 'A–Z', newest: 'Newest', value: 'Highest value', due: 'Due soonest' } as Record<Sort, string>)[sort]}</span>}>
+            <option value="name">Name (A–Z)</option><option value="newest">Newest added first</option><option value="value">Highest value first</option><option value="due">Due soonest first</option>
           </Select>
           <button className={cx('btn btn-sm', active > 0 && 'btn-primary')} onClick={() => setShow(true)}><SlidersHorizontal size={14} /> {active ? active : 'Filter'}</button>
         </div>
@@ -69,10 +70,10 @@ export function AssetsPage() {
       <button className="fab" aria-label="Add asset" onClick={() => gate('asset') && open({ kind: 'asset' })}><Plus size={22} /></button>
       <Sheet open={show} onClose={() => setShow(false)} title="Filter assets" footer={<button className="btn btn-primary btn-block" onClick={() => setShow(false)}>Show {rows.length}</button>}>
         <div className="stack">
-          <label className="field"><span className="field-label">Owner</span><Select value={filters.member} onChange={(e) => setFilters({ ...filters, member: e.target.value })}><option value="">Anyone</option>{db.members.filter((m) => m.state !== 'removed').map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</Select></label>
-          <label className="field"><span className="field-label">Property</span><Select value={filters.property} onChange={(e) => setFilters({ ...filters, property: e.target.value })}><option value="">Any</option>{db.properties.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</Select></label>
-          <label className="field"><span className="field-label">Status</span><Select value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}><option value="">Any</option>{db.statuses.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select></label>
-          <label className="field"><span className="field-label">Coverage</span><Select value={filters.cover} onChange={(e) => setFilters({ ...filters, cover: e.target.value })}><option value="">Any</option><option value="expiring">Expiring in 30 days</option><option value="lapsed">Lapsed</option><option value="none">No coverage</option></Select></label>
+          <label className="field"><span className="field-label">Owner</span><Select aria-label="Owner" value={filters.member} onChange={(e) => setFilters({ ...filters, member: e.target.value })}><option value="">Anyone</option>{db.members.filter((m) => m.state !== 'removed').map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</Select></label>
+          {db.properties.length > 1 && <div className="field"><span className="field-label">Kept at</span><Select aria-label="Kept at" value={filters.property} onChange={(e) => setFilters({ ...filters, property: e.target.value })}><option value="">Any home</option>{db.properties.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</Select><span className="field-hint">Which of your homes the item is at</span></div>}
+          <label className="field"><span className="field-label">Status</span><Select aria-label="Status" value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}><option value="">Any</option>{db.statuses.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select></label>
+          <div className="field"><span className="field-label">Insurance / warranty</span><Select aria-label="Insurance / warranty" value={filters.cover} onChange={(e) => setFilters({ ...filters, cover: e.target.value })}><option value="">Any</option><option value="expiring">Expiring in 30 days</option><option value="lapsed">Expired</option><option value="none">Not insured / no warranty</option></Select><span className="field-hint">Find items whose insurance, warranty or AMC needs attention</span></div>
           {isOwner(me) && <p className="xs muted">Saved views — planned (P1)</p>}
         </div>
       </Sheet>

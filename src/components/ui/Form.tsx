@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from 'react';
-import { AlertCircle, FileUp, Loader2, Paperclip, X } from 'lucide-react';
+import { Children, isValidElement, useEffect, useRef, useState, type InputHTMLAttributes, type ReactElement, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from 'react';
+import { createPortal } from 'react-dom';
+import { AlertCircle, Check, FileUp, Loader2, Paperclip, X } from 'lucide-react';
 import { cx, fileSize } from '../../lib/utils';
 
 export function Field({ label, htmlFor, required, optional, hint, error, children, className }: {
@@ -24,8 +25,70 @@ export function Input({ invalid, className, ...rest }: InputHTMLAttributes<HTMLI
   return <input className={cx('input', invalid && 'invalid', className)} aria-invalid={invalid || undefined} {...rest} />;
 }
 
-export function Select({ invalid, className, children, ...rest }: SelectHTMLAttributes<HTMLSelectElement> & { invalid?: boolean }) {
-  return <select className={cx('select', invalid && 'invalid', className)} aria-invalid={invalid || undefined} {...rest}>{children}</select>;
+type SelectProps = Omit<SelectHTMLAttributes<HTMLSelectElement>, 'onChange'> & { invalid?: boolean; title?: string; display?: ReactNode; onChange?: (e: { target: { value: string } }) => void };
+
+/** Reads <option> children (also inside fragments / arrays) into a plain list. */
+function readOptions(children: ReactNode): { value: string; label: string; disabled?: boolean }[] {
+  const out: { value: string; label: string; disabled?: boolean }[] = [];
+  const walk = (n: ReactNode) => Children.forEach(n, (c) => {
+    if (!isValidElement(c)) return;
+    const el = c as ReactElement<{ value?: unknown; children?: ReactNode; disabled?: boolean }>;
+    if (el.type === 'option') {
+      const label = Children.toArray(el.props.children).join('');
+      out.push({ value: el.props.value === undefined ? label : String(el.props.value), label, disabled: el.props.disabled });
+    } else walk(el.props.children);
+  });
+  walk(children);
+  return out;
+}
+
+/**
+ * Dropdown that opens as a small in-app list instead of the phone's full-screen picker, so it can always be
+ * closed without choosing (tap outside, ✕ or Esc). Same props as a native <select> with <option> children.
+ */
+export function Select({ invalid, className, children, value, onChange, disabled, id, style, title, display, ...rest }: SelectProps) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const opts = readOptions(children);
+  const cur = opts.find((o) => o.value === String(value ?? ''));
+  const label = (rest as { 'aria-label'?: string })['aria-label'] ?? title;
+  const placeholder = opts.find((o) => o.value === '')?.label;
+  const pick = (v: string) => { onChange?.({ target: { value: v } }); setOpen(false); setQ(''); };
+  const list = q ? opts.filter((o) => o.label.toLowerCase().includes(q.toLowerCase())) : opts;
+  useEffect(() => {
+    if (!open) return;
+    const k = (e: KeyboardEvent) => e.key === 'Escape' && (e.stopPropagation(), setOpen(false));
+    document.addEventListener('keydown', k, true);
+    return () => document.removeEventListener('keydown', k, true);
+  }, [open]);
+  return (
+    <>
+      <button type="button" id={id} style={style} disabled={disabled} aria-haspopup="listbox" aria-expanded={open} aria-label={label} aria-invalid={invalid || undefined}
+        className={cx('select select-btn', invalid && 'invalid', !cur?.value && 'placeholder', className)} onClick={() => setOpen(true)}>
+        {display ?? <span className="ellipsis">{cur?.label ?? placeholder ?? 'Select'}</span>}
+      </button>
+      {open && createPortal(
+        <div className="picker-overlay" onMouseDown={(e) => e.target === e.currentTarget && setOpen(false)}>
+          <div className="picker" role="dialog" aria-modal="true" aria-label={label ?? 'Choose'}>
+            <div className="picker-head">
+              <b className="ellipsis">{label ?? placeholder ?? 'Choose one'}</b>
+              <button type="button" className="close-btn" aria-label="Close" onClick={() => setOpen(false)}><X size={17} /></button>
+            </div>
+            {opts.length > 8 && <div className="picker-search"><input className="input" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search" aria-label="Search options" /></div>}
+            <div className="picker-list" role="listbox">
+              {list.map((o) => (
+                <button type="button" key={o.value} role="option" aria-selected={o.value === cur?.value} disabled={o.disabled} className={cx('picker-opt', o.value === cur?.value && 'on', o.value === '' && 'muted')} onClick={() => pick(o.value)}>
+                  <span className="grow">{o.label}</span>{o.value === cur?.value && <Check size={16} />}
+                </button>
+              ))}
+              {!list.length && <p className="xs muted" style={{ padding: 12 }}>No match</p>}
+            </div>
+          </div>
+        </div>,
+        document.getElementById('app-frame') ?? document.body,
+      )}
+    </>
+  );
 }
 
 export function Textarea({ invalid, className, ...rest }: TextareaHTMLAttributes<HTMLTextAreaElement> & { invalid?: boolean }) {
@@ -47,6 +110,16 @@ export function Switch({ checked, onChange, label, disabled }: { checked: boolea
       <input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} aria-label={label} />
       <span />
     </label>
+  );
+}
+
+/** A switch with its name and a one-line explanation shown next to it. */
+export function SwitchRow({ checked, onChange, label, desc, disabled }: { checked: boolean; onChange: (v: boolean) => void; label: string; desc?: ReactNode; disabled?: boolean }) {
+  return (
+    <div className="card-row switch-row">
+      <span className="grow"><b className="small">{label}</b>{desc && <span className="xs muted" style={{ display: 'block' }}>{desc}</span>}</span>
+      <Switch checked={checked} onChange={onChange} label={label} disabled={disabled} />
+    </div>
   );
 }
 
