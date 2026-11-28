@@ -232,12 +232,12 @@ function Asset360({ a }: { a: Asset }) {
       <SecBox c={collapsed} t={toggle} id="tasks" title="Tasks" icon={<ClipboardList size={15} />} count={openTasks.length} action={<AddBtn on={() => open({ kind: 'task', assetId: a.id })} />}>
         {openTasks.length === 0 ? <Empty icon={<ClipboardList size={18} />} title="No open tasks">{editable && <button className="btn btn-sm btn-primary" onClick={w(() => open({ kind: 'task', assetId: a.id }))}>Add task</button>}</Empty> : openTasks.slice(0, 5).map((t) => (
           <div key={t.id} className="card-row">
-            <input type="checkbox" className="check-lg" aria-label={`Mark ${t.title} done`} checked={false} disabled={!(canEdit(me, t) || t.assigneeId === me.id)} onChange={() => { setTaskStatus(t.id, 'done'); toast({ type: 'success', title: 'Done', message: t.recurrence !== 'none' ? 'Next one added' : undefined }); }} />
+            <input type="checkbox" className="check-lg" aria-label={`Mark ${t.title} done`} checked={false} disabled={!(canEdit(me, t) || t.assigneeId === me.id)} onChange={() => setConfirm({ title: 'Mark as done?', label: 'Yes, done', message: `“${t.title}” will move to Completed.${t.recurrence !== 'none' ? ' The next one is added automatically.' : ''}`, run: () => { setTaskStatus(t.id, 'done'); toast({ type: 'success', title: 'Done', message: t.recurrence !== 'none' ? 'Next one added' : undefined }); } })} />
             <div className="grow" style={{ minWidth: 0 }}><b className="small">{t.title}</b><span className="xs muted" style={{ display: 'block' }}>{withRelation(db, t.assigneeId, me)} · {fmtDate(t.dueDate)}{t.dueTime ? ` ${t.dueTime}` : ''}</span></div>
             <TaskBadge t={t} />
             {canEdit(me, t) && <button className="icon-btn sm" aria-label="Task actions" onClick={() => setSheet({ title: t.title, actions: [
               { label: 'Edit', icon: <Edit3 size={17} />, onClick: () => open({ kind: 'task', task: t }) },
-              { label: 'Cancel task', icon: <X size={17} />, onClick: () => setTaskStatus(t.id, 'cancelled') },
+              { label: 'Cancel task', icon: <X size={17} />, onClick: () => setConfirm({ title: 'Cancel this task?', label: 'Cancel task', message: `“${t.title}” is cancelled and its reminders stop.`, run: () => setTaskStatus(t.id, 'cancelled') }) },
               { label: 'Delete', icon: <Trash2 size={17} />, danger: true, onClick: () => removeRow('tasks', t.id) },
             ] })}><MoreVertical size={16} /></button>}
           </div>

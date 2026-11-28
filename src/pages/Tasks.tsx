@@ -8,7 +8,7 @@ import { obState, taskOverdue, withRelation } from '../lib/compute';
 import { addDays, cx, daysUntil, fmtDate, inr, today } from '../lib/utils';
 import { MenuBtn, ObBadge, SpaceSwitch, TaskBadge, TopBar } from '../components/common';
 import { Empty, Pills, Segmented } from '../components/ui/Misc';
-import { ActionSheet, type SheetAction } from '../components/ui/Modal';
+import { ActionSheet, Confirm, type SheetAction } from '../components/ui/Modal';
 import { useToast } from '../components/ui/Toast';
 import { useEd } from '../components/editors/Editors';
 import { MonthCalendar } from '../components/MonthCalendar';
@@ -28,6 +28,13 @@ export function TasksPage() {
   const [show, setShow] = useState<'both' | 'tasks' | 'reminders'>(params.get('tab') === 'reminders' ? 'reminders' : 'both');
   const [view, setView] = useState<'list' | 'cal'>('list');
   const [sheet, setSheet] = useState<null | { title: string; actions: SheetAction[] }>(null);
+  const [ask, setAsk] = useState<null | { title: string; message: string; label: string; danger?: boolean; run: () => void }>(null);
+  const askDone = (t: Task) => setAsk({
+    title: 'Mark as done?', label: 'Yes, done',
+    message: `“${t.title}” will move to Completed.${t.recurrence !== 'none' ? ' The next one is added automatically.' : ''}${t.assigneeId !== me.id ? ` ${db.members.find((m) => m.id === t.assigneeId)?.name.split(' ')[0]} is notified.` : ''}`,
+    run: () => { setTaskStatus(t.id, 'done'); toast({ type: 'success', title: 'Done!', message: t.recurrence !== 'none' ? 'Next one added' : undefined }); },
+  });
+  const askReopen = (t: Task) => setAsk({ title: 'Mark as not done?', label: 'Reopen', message: `“${t.title}” goes back to the open list.`, run: () => { setTaskStatus(t.id, 'pending'); toast({ type: 'success', title: 'Task reopened' }); } });
 
   const items = useMemo<Item[]>(() => {
     const ts = tasks.filter((t) => scope === 'all' || (scope === 'mine' ? t.assigneeId === me.id : t.createdBy === me.id && t.assigneeId !== me.id));
@@ -51,23 +58,23 @@ export function TasksPage() {
 
   const taskActions = (t: Task): SheetAction[] => [
     { label: t.status === 'in_progress' ? 'Mark to do' : 'Start', icon: <Play size={17} />, onClick: () => setTaskStatus(t.id, t.status === 'in_progress' ? 'pending' : 'in_progress'), hidden: !(t.status === 'pending' || t.status === 'in_progress') },
-    { label: 'Reopen', icon: <RotateCcw size={17} />, onClick: () => setTaskStatus(t.id, 'pending'), hidden: t.status === 'pending' || t.status === 'in_progress' },
+    { label: 'Reopen', icon: <RotateCcw size={17} />, onClick: () => askReopen(t), hidden: t.status === 'pending' || t.status === 'in_progress' },
     { label: 'Edit', icon: <Edit3 size={17} />, onClick: () => open({ kind: 'task', task: t }), hidden: !canEdit(me, t) },
-    { label: 'Cancel task', icon: <X size={17} />, onClick: () => setTaskStatus(t.id, 'cancelled'), hidden: !canEdit(me, t) || t.status === 'cancelled' || t.status === 'done' },
+    { label: 'Cancel task', icon: <X size={17} />, onClick: () => setAsk({ title: 'Cancel this task?', label: 'Cancel task', danger: true, message: `“${t.title}” is cancelled and its reminders stop. It stays in Completed for history.`, run: () => { setTaskStatus(t.id, 'cancelled'); toast({ type: 'success', title: 'Task cancelled' }); } }), hidden: !canEdit(me, t) || t.status === 'cancelled' || t.status === 'done' },
     { label: 'Delete', icon: <Trash2 size={17} />, danger: true, onClick: () => { removeRow('tasks', t.id); toast({ type: 'success', title: 'Task deleted' }); }, hidden: !canEdit(me, t) },
   ];
   const obActions = (o: Obligation): SheetAction[] => [
     { label: 'Mark paid / renewed', icon: <CalendarCheck size={17} />, onClick: () => open({ kind: 'complete', obligation: o }), hidden: o.status !== 'open' },
     { label: 'Snooze until tomorrow', icon: <Moon size={17} />, onClick: () => { snooze(o.id, addDays(today(), 1)); toast({ type: 'info', title: 'Snoozed' }); }, hidden: o.status !== 'open' },
     { label: 'Edit', icon: <Edit3 size={17} />, onClick: () => open({ kind: 'obligation', obligation: o }) },
-    { label: 'Cancel (stop reminders)', icon: <X size={17} />, onClick: () => cancelObligation(o.id), hidden: o.status !== 'open' },
-    { label: 'Delete', icon: <Trash2 size={17} />, danger: true, onClick: () => removeRow('obligations', o.id) },
+    { label: 'Cancel (stop reminders)', icon: <X size={17} />, onClick: () => setAsk({ title: 'Stop this reminder?', label: 'Stop reminders', danger: true, message: `No more reminders for “${o.title}”. It stays in Completed for history.`, run: () => { cancelObligation(o.id); toast({ type: 'success', title: 'Reminder stopped' }); } }), hidden: o.status !== 'open' },
+    { label: 'Delete', icon: <Trash2 size={17} />, danger: true, onClick: () => setAsk({ title: 'Delete this reminder?', label: 'Delete', danger: true, message: `“${o.title}” is removed permanently. This can’t be undone.`, run: () => { removeRow('obligations', o.id); toast({ type: 'success', title: 'Reminder deleted' }); } }) },
   ];
 
   const row = (i: Item) => i.kind === 'task' ? (
     <div key={i.t.id} className={cx('mrow', taskOverdue(i.t) && 'danger')}>
       <input type="checkbox" className="check-lg" aria-label={`Mark ${i.t.title} done`} checked={i.t.status === 'done'} disabled={!(canEdit(me, i.t) || i.t.assigneeId === me.id) || i.t.status === 'cancelled'}
-        onChange={(e) => { setTaskStatus(i.t.id, e.target.checked ? 'done' : 'pending'); if (e.target.checked) toast({ type: 'success', title: 'Done!', message: i.t.recurrence !== 'none' ? 'Next one added' : undefined }); }} />
+        onChange={(e) => (e.target.checked ? askDone(i.t) : askReopen(i.t))} />
       <span className="row-text">
         <b style={{ textDecoration: i.t.status === 'done' ? 'line-through' : undefined }}>{i.t.title}</b>
         <em>{withRelation(db, i.t.assigneeId, me)} · {fmtDate(i.t.dueDate)}{i.t.dueTime ? ` ${i.t.dueTime}` : ''}{i.t.assetId ? ` · ${db.assets.find((a) => a.id === i.t.assetId)?.name}` : i.t.memberId ? ` · ${db.members.find((m) => m.id === i.t.memberId)?.name.split(' ')[0]}` : ''}</em>
@@ -115,6 +122,7 @@ export function TasksPage() {
         </div>
       )}
       <button className="fab" aria-label="Add task" onClick={() => open({ kind: 'task' })}><Plus size={22} /></button>
+      <Confirm open={!!ask} title={ask?.title ?? ''} message={ask?.message ?? ''} confirmLabel={ask?.label} danger={!!ask?.danger} onConfirm={() => ask?.run()} onClose={() => setAsk(null)} />
       {sheet && <ActionSheet open onClose={() => setSheet(null)} title={sheet.title} actions={sheet.actions} />}
     </div>
   );
