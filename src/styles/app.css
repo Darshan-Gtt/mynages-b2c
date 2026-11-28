@@ -449,3 +449,8 @@ button.ctile:hover { border-color: var(--brand); background: var(--brand-50); }
 .switch-row { align-items: center; gap: 12px; }
 .action-item.on { background: var(--surface-3); }
 .select-btn { gap: 6px; }
+/* Tasks: multi-select */
+.pick-row { cursor: pointer; }
+.pick-row.on { background: var(--surface-3); }
+.pick-row.disabled { opacity: 0.55; cursor: default; }
+.bulk-bar { position: fixed; left: 50%; transform: translateX(-50%); width: min(100% - 24px, 616px); bottom: calc(var(--tab-h) + 12px); z-index: 26; display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 16px; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--sh-lg); }

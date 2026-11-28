@@ -1,9 +1,9 @@
 import { useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Bell, Phone, CalendarCheck, CalendarDays, ClipboardList, Edit3, List, Moon, Play, Plus, RotateCcw, Trash2, X } from 'lucide-react';
+import { Bell, Phone, CalendarCheck, CalendarDays, CheckCheck, CheckSquare, ClipboardList, Edit3, List, Moon, Play, Plus, RotateCcw, Trash2, X } from 'lucide-react';
 import { useActive } from '../lib/hooks';
 import { canEdit } from '../lib/access';
-import { cancelObligation, removeRow, setTaskStatus, snooze } from '../lib/actions';
+import { cancelObligation, completeObligation, removeRow, setTaskStatus, snooze } from '../lib/actions';
 import { obState, taskOverdue, withRelation } from '../lib/compute';
 import { addDays, cx, daysUntil, fmtDate, inr, today } from '../lib/utils';
 import { MenuBtn, ObBadge, SpaceSwitch, TaskBadge, TopBar } from '../components/common';
@@ -34,6 +34,13 @@ export function TasksPage() {
     message: `“${t.title}” will move to Completed.${t.recurrence !== 'none' ? ' The next one is added automatically.' : ''}${t.assigneeId !== me.id ? ` ${db.members.find((m) => m.id === t.assigneeId)?.name.split(' ')[0]} is notified.` : ''}`,
     run: () => { setTaskStatus(t.id, 'done'); toast({ type: 'success', title: 'Done!', message: t.recurrence !== 'none' ? 'Next one added' : undefined }); },
   });
+  // Multi-select: pick several open tasks / reminders and complete them in one go.
+  const [selecting, setSelecting] = useState(false);
+  const [picked, setPicked] = useState<string[]>([]);
+  const keyOf = (i: Item) => (i.kind === 'task' ? `t:${i.t.id}` : `o:${i.o.id}`);
+  const canComplete = (i: Item) => (i.kind === 'task' ? (i.t.status === 'pending' || i.t.status === 'in_progress') && (canEdit(me, i.t) || i.t.assigneeId === me.id) : i.o.status === 'open' && canEdit(me, i.o));
+  const togglePick = (i: Item) => { const k = keyOf(i); setPicked((xs) => (xs.includes(k) ? xs.filter((x) => x !== k) : [...xs, k])); };
+  const endSelect = () => { setSelecting(false); setPicked([]); };
   const askReopen = (t: Task) => setAsk({ title: 'Mark as not done?', label: 'Reopen', message: `“${t.title}” goes back to the open list.`, run: () => { setTaskStatus(t.id, 'pending'); toast({ type: 'success', title: 'Task reopened' }); } });
 
   const items = useMemo<Item[]>(() => {
@@ -54,6 +61,33 @@ export function TasksPage() {
     if (tab === 'completed') return !isOpen(i);
     return i.kind === 'ob' && i.o.type === 'subscription_renewal';
   }).sort((a, b) => (tab === 'completed' ? b.date.localeCompare(a.date) : a.date.localeCompare(b.date)));
+  const selectable = filtered.filter(canComplete);
+  const pickedItems = selectable.filter((i) => picked.includes(keyOf(i)));
+  const allPicked = selectable.length > 0 && pickedItems.length === selectable.length;
+  const askBulk = () => {
+    const ts = pickedItems.filter((i): i is Extract<Item, { kind: 'task' }> => i.kind === 'task');
+    const os = pickedItems.filter((i): i is Extract<Item, { kind: 'ob' }> => i.kind === 'ob');
+    const money = os.reduce((sum, i) => sum + (i.o.amount ?? 0), 0);
+    const repeats = pickedItems.filter((i) => (i.kind === 'task' ? i.t.recurrence : i.o.recurrence) !== 'none').length;
+    setAsk({
+      title: `Mark ${pickedItems.length} as complete?`, label: `Yes, complete ${pickedItems.length}`,
+      message: [
+        ts.length ? `${ts.length} task${ts.length > 1 ? 's' : ''} → Done.` : '',
+        os.length ? `${os.length} reminder${os.length > 1 ? 's' : ''} → Paid / renewed today${money ? ` (${inr(money)} added to expenses)` : ''}.` : '',
+        repeats ? `${repeats} repeating item${repeats > 1 ? 's get' : ' gets'} the next one added automatically.` : '',
+        'You can reopen a task from Completed if needed.',
+      ].filter(Boolean).join(' '),
+      run: () => {
+        let n = 0;
+        try {
+          for (const i of ts) { setTaskStatus(i.t.id, 'done'); n++; }
+          for (const i of os) { completeObligation(i.o.id, today(), i.o.amount); n++; }
+          toast({ type: 'success', title: `${n} marked complete` });
+        } catch (e) { toast({ type: 'error', title: `${n} completed, then stopped`, message: e instanceof Error ? e.message : undefined }); }
+        endSelect();
+      },
+    });
+  };
   const count = (t: Tab) => items.filter((i) => (t === 'today' ? isOpen(i) && i.date <= today() : t === 'upcoming' ? isOpen(i) && !isOver(i) : t === 'overdue' ? isOpen(i) && isOver(i) : t === 'completed' ? !isOpen(i) : i.kind === 'ob' && i.o.type === 'subscription_renewal')).length;
 
   const taskActions = (t: Task): SheetAction[] => [
@@ -71,7 +105,23 @@ export function TasksPage() {
     { label: 'Delete', icon: <Trash2 size={17} />, danger: true, onClick: () => setAsk({ title: 'Delete this reminder?', label: 'Delete', danger: true, message: `“${o.title}” is removed permanently. This can’t be undone.`, run: () => { removeRow('obligations', o.id); toast({ type: 'success', title: 'Reminder deleted' }); } }) },
   ];
 
-  const row = (i: Item) => i.kind === 'task' ? (
+  const pickRow = (i: Item) => {
+    const ok = canComplete(i);
+    const on = picked.includes(keyOf(i));
+    const title = i.kind === 'task' ? i.t.title : i.o.title;
+    return (
+      <label key={keyOf(i)} className={cx('mrow pick-row', on && 'on', !ok && 'disabled')}>
+        <input type="checkbox" className="check-lg" aria-label={`Select ${title}`} checked={on} disabled={!ok} onChange={() => togglePick(i)} />
+        <span className="row-text">
+          <b>{title}</b>
+          <em>{i.kind === 'task' ? `Task · ${withRelation(db, i.t.assigneeId, me)}` : `Reminder${i.o.amount ? ` · ${inr(i.o.amount)}` : ''}`} · {fmtDate(i.date)}{!ok ? ' · you can’t complete this' : ''}</em>
+        </span>
+        {i.kind === 'task' ? <TaskBadge t={i.t} /> : <ObBadge o={i.o} />}
+      </label>
+    );
+  };
+
+  const row = (i: Item) => selecting ? pickRow(i) : i.kind === 'task' ? (
     <div key={i.t.id} className={cx('mrow', taskOverdue(i.t) && 'danger')}>
       <input type="checkbox" className="check-lg" aria-label={`Mark ${i.t.title} done`} checked={i.t.status === 'done'} disabled={!(canEdit(me, i.t) || i.t.assigneeId === me.id) || i.t.status === 'cancelled'}
         onChange={(e) => (e.target.checked ? askDone(i.t) : askReopen(i.t))} />
@@ -99,13 +149,16 @@ export function TasksPage() {
     <div className="page">
       <TopBar title="Tasks & Reminders" actions={<button className="icon-btn" aria-label={view === 'list' ? 'Calendar view' : 'List view'} onClick={() => setView(view === 'list' ? 'cal' : 'list')}>{view === 'list' ? <CalendarDays size={19} /> : <List size={19} />}</button>} />
       <div className="pad-x"><SpaceSwitch /></div>
-      <Pills<Tab> value={tab} onChange={(t) => setParams({ tab: t })} items={[
+      <Pills<Tab> value={tab} onChange={(t) => { setParams({ tab: t }); endSelect(); }} items={[
         { id: 'today', label: 'Today', count: count('today') }, { id: 'upcoming', label: 'Upcoming', count: count('upcoming') }, { id: 'overdue', label: 'Overdue', count: count('overdue') },
         { id: 'completed', label: 'Completed' }, { id: 'subscriptions', label: 'Subscriptions', count: count('subscriptions') },
       ]} />
       <div className="row-wrap pad-x" style={{ gap: 6, margin: '8px 0' }}>
         <Segmented label="Whose" value={scope} onChange={setScope} options={[{ value: 'mine', label: 'Mine' }, { value: 'byme', label: 'Assigned by me' }, { value: 'all', label: 'All family' }]} />
         <Segmented label="Show" value={show} onChange={setShow} options={[{ value: 'both', label: 'All' }, { value: 'tasks', label: 'Tasks' }, { value: 'reminders', label: 'Reminders' }]} />
+        {view === 'list' && tab !== 'completed' && (selecting
+          ? <button className="btn btn-xs" onClick={endSelect}><X size={13} /> Cancel selection</button>
+          : <button className="btn btn-xs" disabled={!selectable.length} onClick={() => { setSelecting(true); setPicked([]); }}><CheckSquare size={13} /> Select</button>)}
       </div>
       {view === 'cal' ? (
         <MonthCalendar items={items.filter(isOpen).map((i) => ({ id: i.kind === 'task' ? i.t.id : i.o.id, date: i.date, title: i.kind === 'task' ? i.t.title : i.o.title, tone: isOver(i) ? 'danger' : daysUntil(i.date) <= 7 ? 'warning' : 'info' }))}
@@ -119,9 +172,16 @@ export function TasksPage() {
         <div className="list">
           {tab === 'subscriptions' && <p className="xs muted pad-x">Reminders of type “Subscription renewal” — Netflix, Hotstar, Spotify, cloud storage, apps. Monthly total: <b>{inr(filtered.reduce((s, i) => s + (i.kind === 'ob' && i.o.recurrence === 'monthly' ? i.o.amount ?? 0 : i.kind === 'ob' && i.o.recurrence === 'yearly' ? (i.o.amount ?? 0) / 12 : 0), 0))}</b> · tip: set a task to cancel before auto-renew</p>}
           {filtered.map(row)}
+          {selecting && <div style={{ height: 70 }} />}
         </div>
       )}
-      <button className="fab" aria-label="Add task" onClick={() => open({ kind: 'task' })}><Plus size={22} /></button>
+      {selecting ? (
+        <div className="bulk-bar" role="toolbar" aria-label="Selected items">
+          <span className="grow small"><b>{pickedItems.length}</b> selected</span>
+          <button className="btn btn-sm" onClick={() => setPicked(allPicked ? [] : selectable.map(keyOf))}>{allPicked ? 'Clear' : `Select all ${selectable.length}`}</button>
+          <button className="btn btn-sm btn-primary" disabled={!pickedItems.length} onClick={askBulk}><CheckCheck size={15} /> Mark complete</button>
+        </div>
+      ) : <button className="fab" aria-label="Add task" onClick={() => open({ kind: 'task' })}><Plus size={22} /></button>}
       <Confirm open={!!ask} title={ask?.title ?? ''} message={ask?.message ?? ''} confirmLabel={ask?.label} danger={!!ask?.danger} onConfirm={() => ask?.run()} onClose={() => setAsk(null)} />
       {sheet && <ActionSheet open onClose={() => setSheet(null)} title={sheet.title} actions={sheet.actions} />}
     </div>
