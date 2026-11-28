@@ -56,7 +56,7 @@ export function SettingsPage() {
         })}
         <button className="mrow danger" onClick={() => signOut()}><span className="icon-tile sm danger"><LogOut size={18} /></span><span className="row-text"><b>Sign out</b></span></button>
       </div>
-      <p className="xs muted center pad">Mynages family app · v0.3</p>
+      <p className="xs muted center pad">Mynages family app · v{__APP_VERSION__}</p>
     </div>
   );
 }
